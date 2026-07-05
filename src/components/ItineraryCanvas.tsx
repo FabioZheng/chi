@@ -154,16 +154,26 @@ function routeSegmentLooseKey(segment: RouteSegment) {
   ].join("|");
 }
 
+function routeSegmentRenderKey(segment: RouteSegment, index: number) {
+  return `${segment.id}-${segment.dayNumber ?? "all"}-${segment.fromPlaceId}-${segment.toPlaceId}-${index}`;
+}
+
 function dedupeRouteSegments(segments: RouteSegment[]) {
   const exactKeys = new Set<string>();
   const looseKeys = new Set<string>();
+  const idEndpointKeys = new Set<string>();
   const deduped: RouteSegment[] = [];
 
   segments.forEach((segment) => {
     const looseKey = routeSegmentLooseKey(segment);
     const exactKey = `${segment.dayNumber ?? "all"}|${looseKey}`;
+    const idEndpointKey = `${segment.dayNumber ?? "all"}|${segment.id}|${segment.fromPlaceId}|${segment.toPlaceId}`;
 
     if (exactKeys.has(exactKey)) {
+      return;
+    }
+
+    if (idEndpointKeys.has(idEndpointKey)) {
       return;
     }
 
@@ -173,6 +183,7 @@ function dedupeRouteSegments(segments: RouteSegment[]) {
 
     exactKeys.add(exactKey);
     looseKeys.add(looseKey);
+    idEndpointKeys.add(idEndpointKey);
     deduped.push(segment);
   });
 
@@ -933,7 +944,7 @@ function LegacyItineraryMap({ selectedOption, labels }: { selectedOption: Itiner
               </pattern>
             </defs>
             <rect width="640" height="330" fill="url(#map-grid)" />
-            {routeSegments.map((segment) => {
+            {routeSegments.map((segment, index) => {
               const from = positionedById.get(segment.fromPlaceId);
               const to = positionedById.get(segment.toPlaceId);
 
@@ -942,7 +953,7 @@ function LegacyItineraryMap({ selectedOption, labels }: { selectedOption: Itiner
               }
 
               return (
-                <g key={segment.id}>
+                <g key={routeSegmentRenderKey(segment, index)}>
                   <line
                     x1={from.x}
                     y1={from.y}
@@ -1002,12 +1013,12 @@ function LegacyItineraryMap({ selectedOption, labels }: { selectedOption: Itiner
 
       {routeSegments.length > 0 ? (
         <div className="mt-3 grid gap-2 md:grid-cols-2">
-          {routeSegments.slice(0, 6).map((segment) => {
+          {routeSegments.slice(0, 6).map((segment, index) => {
             const from = positionedById.get(segment.fromPlaceId);
             const to = positionedById.get(segment.toPlaceId);
 
             return (
-              <div key={segment.id} className="rounded-[8px] border border-slate-200 bg-white p-2 text-xs font-semibold text-slate-600">
+              <div key={routeSegmentRenderKey(segment, index)} className="rounded-[8px] border border-slate-200 bg-white p-2 text-xs font-semibold text-slate-600">
                 <div className="flex items-center gap-2 font-black text-slate-800">
                   <Bus className="size-3.5 text-indigo-600" />
                   <span className="truncate">
@@ -1205,12 +1216,12 @@ function ItineraryMap({
               <p className="mt-2 text-xs font-semibold text-slate-500">{labels.noRouteSegments}</p>
             ) : (
               <div className="mt-3 space-y-2">
-                {routeSegments.slice(0, 5).map((segment) => {
+                {routeSegments.slice(0, 5).map((segment, index) => {
                   const from = positionedById.get(segment.fromPlaceId);
                   const to = positionedById.get(segment.toPlaceId);
 
                   return (
-                    <div key={segment.id} className="rounded-[8px] border border-slate-100 bg-slate-50 p-2 text-xs font-semibold text-slate-600">
+                    <div key={routeSegmentRenderKey(segment, index)} className="rounded-[8px] border border-slate-100 bg-slate-50 p-2 text-xs font-semibold text-slate-600">
                       <div className="flex items-center gap-2 font-black text-slate-800">
                         <Bus className="size-3.5 text-indigo-600" />
                         <span className="truncate">
