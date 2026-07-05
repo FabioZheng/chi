@@ -1,7 +1,7 @@
 "use client";
 
-import { Bot, BrainCircuit, Database, MapPinned, Plus, Route, ShieldAlert } from "lucide-react";
-import { languageNames, type Language, type ViewMode } from "@/i18n";
+import { Bot, BrainCircuit, Database, MapPinned, Plus, Route, SearchCheck, ShieldAlert, Sparkles } from "lucide-react";
+import { languageNames, type Language, type UIText, type ViewMode } from "@/i18n";
 import type { AgentTrace } from "@/types/travel";
 
 type TopBarProps = {
@@ -9,21 +9,14 @@ type TopBarProps = {
   agentTrace: AgentTrace[];
   activeView: ViewMode;
   language: Language;
-  labels: {
-    appTitle: string;
-    appSubtitle: string;
-    planView: string;
-    assumptionsView: string;
-    canvasView: string;
-    agentsLabel: string;
-    saved: string;
-    language: string;
-  };
+  labels: UIText;
   onViewChange: (view: ViewMode) => void;
   onLanguageChange: (language: Language) => void;
 };
 
 const workflowAgents: AgentTrace["agent"][] = [
+  "Conflict Detector Agent",
+  "Preference Probe Agent",
   "Preference Agent",
   "Assumption Critic Agent",
   "Planner Agent",
@@ -32,6 +25,8 @@ const workflowAgents: AgentTrace["agent"][] = [
 ];
 
 const iconForAgent: Record<AgentTrace["agent"], typeof Bot> = {
+  "Conflict Detector Agent": SearchCheck,
+  "Preference Probe Agent": Sparkles,
   "Preference Agent": Bot,
   "Assumption Critic Agent": ShieldAlert,
   "Planner Agent": Route,
@@ -47,8 +42,12 @@ const toneForIndex = [
   "border-sky-100 bg-sky-50 text-sky-700"
 ];
 
-function shortAgentName(agent: AgentTrace["agent"]) {
-  return agent.replace(" Agent", "").replace("Assumption Critic", "Critic").replace("Constraint Checker", "Check");
+function agentLabel(labels: UIText, agent: AgentTrace["agent"]) {
+  return (labels.agentLabels as Partial<Record<AgentTrace["agent"], string>>)[agent] || agent;
+}
+
+function shortAgentLabel(labels: UIText, agent: AgentTrace["agent"]) {
+  return (labels.shortAgentLabels as Partial<Record<AgentTrace["agent"], string>>)[agent] || agent.replace(" Agent", "");
 }
 
 export function TopBar({
@@ -127,14 +126,16 @@ export function TopBar({
                   className={`relative flex size-10 items-center justify-center rounded-full border ${
                     toneForIndex[index % toneForIndex.length]
                   }`}
-                  title={traceEntry?.summary || agent}
+                  title={traceEntry?.summary || agentLabel(labels, agent)}
                 >
                   <Icon className="size-5" />
                   {traceEntry?.status === "Running" ? (
                     <span className="absolute -right-0.5 -top-0.5 size-2.5 rounded-full bg-indigo-500" />
                   ) : null}
                 </div>
-                <span className="max-w-14 truncate text-[10px] font-bold text-blue-800">{shortAgentName(agent)}</span>
+                <span className="max-w-14 truncate text-[10px] font-bold text-blue-800">
+                  {shortAgentLabel(labels, agent)}
+                </span>
               </div>
             );
           })}

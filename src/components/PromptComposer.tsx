@@ -1,5 +1,6 @@
 "use client";
 
+import { useRef } from "react";
 import { Loader2, SearchCheck, SendHorizontal, Sparkles } from "lucide-react";
 
 type PromptStats = {
@@ -40,27 +41,60 @@ export function PromptComposer({
   stats,
   labels
 }: PromptComposerProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
   const chips = [
     { label: `${stats.assumptions} ${labels.assumptionsInferred}`, show: stats.assumptions > 0 },
     { label: `${stats.missing} ${labels.missingPreferences}`, show: stats.missing > 0 },
     { label: `${stats.highImpact} ${labels.highImpactUnresolved}`, show: stats.highImpact > 0 },
     { label: `${stats.memory} ${labels.memoryApplied}`, show: stats.memory > 0 }
   ].filter((chip) => chip.show);
+  const hasPrompt = prompt.trim().length >= 4;
+
+  function focusPrompt() {
+    inputRef.current?.focus();
+  }
+
+  function submitAnalyze() {
+    if (analyzing || planning) {
+      return;
+    }
+
+    if (!hasPrompt) {
+      focusPrompt();
+      return;
+    }
+
+    onAnalyze();
+  }
+
+  function submitGenerate() {
+    if (analyzing || planning) {
+      return;
+    }
+
+    if (!hasPrompt) {
+      focusPrompt();
+      return;
+    }
+
+    onGenerate();
+  }
 
   return (
-    <section className="sticky bottom-3 z-20 mx-auto max-w-5xl rounded-full border border-slate-200/80 bg-white/92 p-2 shadow-[0_18px_50px_rgba(41,32,92,0.16)] backdrop-blur">
+    <section className="fixed bottom-4 left-1/2 z-50 w-[calc(100%-1.5rem)] max-w-5xl -translate-x-1/2 rounded-[22px] border border-slate-200/80 bg-white/92 p-2 shadow-[0_24px_70px_rgba(41,32,92,0.22)] backdrop-blur sm:rounded-full">
       <div className="flex flex-col gap-2 md:flex-row md:items-center">
         <div className="flex min-w-0 flex-1 items-center gap-3 rounded-full bg-slate-50 px-3 py-2">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-indigo-50 text-indigo-600">
             <Sparkles className="size-5" />
           </div>
           <input
+            ref={inputRef}
             value={prompt}
             onChange={(event) => onPromptChange(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey && !analyzing && !planning) {
                 event.preventDefault();
-                onAnalyze();
+                submitAnalyze();
               }
             }}
             placeholder={labels.promptPlaceholder}
@@ -80,17 +114,25 @@ export function PromptComposer({
 
         <div className="flex shrink-0 gap-2">
           <button
-            onClick={onAnalyze}
-            disabled={analyzing || planning || prompt.trim().length < 4}
-            className="flex h-11 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 text-sm font-bold text-slate-800 shadow-sm transition hover:border-indigo-200 hover:text-indigo-700 disabled:cursor-not-allowed disabled:text-slate-300"
+            type="button"
+            onClick={submitAnalyze}
+            disabled={analyzing || planning}
+            className={`flex h-11 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 text-sm font-bold shadow-sm transition hover:border-indigo-200 hover:text-indigo-700 disabled:cursor-wait disabled:text-slate-300 ${
+              hasPrompt ? "text-slate-800" : "text-slate-500"
+            }`}
           >
             {analyzing ? <Loader2 className="size-4 animate-spin" /> : <SearchCheck className="size-4" />}
             {labels.analyze}
           </button>
           <button
-            onClick={onGenerate}
-            disabled={!canGenerate || analyzing || planning}
-            className="flex h-11 min-w-12 items-center justify-center gap-2 rounded-full bg-gradient-to-br from-indigo-600 to-violet-600 px-4 text-sm font-bold text-white shadow-[0_12px_28px_rgba(99,68,255,0.32)] transition hover:from-indigo-500 hover:to-violet-500 disabled:cursor-not-allowed disabled:from-indigo-200 disabled:to-violet-200 disabled:shadow-none"
+            type="button"
+            onClick={submitGenerate}
+            disabled={analyzing || planning}
+            className={`flex h-11 min-w-12 items-center justify-center gap-2 rounded-full px-4 text-sm font-bold text-white transition disabled:cursor-wait disabled:from-indigo-200 disabled:to-violet-200 disabled:shadow-none ${
+              canGenerate
+                ? "bg-gradient-to-br from-indigo-600 to-violet-600 shadow-[0_12px_28px_rgba(99,68,255,0.32)] hover:from-indigo-500 hover:to-violet-500"
+                : "bg-gradient-to-br from-indigo-500 to-violet-500 shadow-[0_12px_28px_rgba(99,68,255,0.24)] hover:from-indigo-500 hover:to-violet-500"
+            }`}
           >
             {planning ? <Loader2 className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
             <span className="hidden sm:inline">{labels.generate}</span>

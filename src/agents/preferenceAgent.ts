@@ -33,13 +33,55 @@ Return JSON with:
       "options": ["Mostly walking", "Public transport", "Taxi when useful"]
     }
   ],
-  "memoryDerivedPreferenceIds": []
+  "memoryDerivedPreferenceIds": [],
+  "transportAssumptions": [
+    {
+      "id": "transport-city-a-city-b",
+      "from": "Starting city or area",
+      "to": "Next city or area",
+      "mode": "train",
+      "estimatedTravelTimeMinutes": 90,
+      "travelBurden": "Medium",
+      "confidence": 0.7,
+      "status": "Pending",
+      "rationale": "Brief explanation."
+    }
+  ],
+  "accommodationAssumptions": [
+    {
+      "id": "night-1-accommodation",
+      "night": 1,
+      "area": "Likely area or city",
+      "accommodationStyle": "mid-range hotel",
+      "changeFromPreviousNight": false,
+      "confidence": 0.7,
+      "status": "Pending",
+      "rationale": "Brief explanation."
+    }
+  ],
+  "costAssumptions": [
+    {
+      "id": "cost-accommodation",
+      "category": "accommodation",
+      "label": "Accommodation",
+      "perDayEstimateEur": 120,
+      "totalEstimateEur": 360,
+      "confidence": 0.6,
+      "status": "Pending",
+      "basis": "Brief explanation of hotel level, room sharing, and roughness.",
+      "isRoughEstimate": true
+    }
+  ]
 }
 
 Assumptions must use source "Inferred", "Memory", or "User".
 Use source "Memory" only when the provided local memory supports the value.
 Set every assumption status to exactly "Pending", even when the preference is explicit in the prompt.
 Missing preferences should include 2 to 5 options when the answer can be offered as choices.
+Always include transportAssumptions, accommodationAssumptions, and costAssumptions arrays. Use empty arrays only when the prompt truly gives no basis.
+Transport assumptions should reason about movement between cities, regions, airports, stations, or major areas. Include mode, estimated travel time, travel burden, and rationale.
+Accommodation assumptions should reason about where the traveler sleeps each night and whether accommodation changes between nights.
+Cost assumptions should break estimates into accommodation, transport, food, attractions, localTransit, optionalActivities, and other when relevant. Explain hotel level, transport mode, meal style, paid attractions, and that prices are rough estimates.
 Write all user-facing text in the requested outputLanguage. Keep JSON field names, enum values, ids, and category values in English exactly as specified.
 Do not generate a final itinerary.
 `;

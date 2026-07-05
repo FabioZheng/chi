@@ -23,20 +23,10 @@ The UI is a visualization layer for real backend LLM calls. It does not use stat
 Install dependencies:
 
 ```bash
-npm install
+pnpm install
 ```
 
-Create `.env` from `.env.example` and configure one provider.
-
-OpenAI:
-
-```env
-LLM_PROVIDER=openai
-OPENAI_API_KEY=your_key_here
-OPENAI_MODEL=gpt-4.1-mini
-```
-
-OpenRouter:
+Create `.env` and configure OpenRouter.
 
 ```env
 LLM_PROVIDER=openrouter
@@ -44,10 +34,12 @@ OPENROUTER_API_KEY=your_key_here
 OPENROUTER_MODEL=openai/gpt-4.1-mini
 ```
 
+OpenAI remains available only if you explicitly set `LLM_PROVIDER=openai` and provide an `OPENAI_API_KEY`.
+
 Run the app:
 
 ```bash
-npm run dev
+pnpm dev
 ```
 
 Open:
@@ -56,7 +48,28 @@ Open:
 http://127.0.0.1:3000
 ```
 
-If the page loads but agent calls fail, check that `.env` contains a valid key and that `LLM_PROVIDER` matches the configured key.
+If the page loads but agent calls fail, check that `.env` contains `OPENROUTER_API_KEY` and `LLM_PROVIDER=openrouter`.
+
+### Vercel Deployment
+
+Deploy the repository as a Next.js project on Vercel. The project includes `vercel.json` with:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm build
+```
+
+Set these Vercel environment variables:
+
+```env
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=your_key_here
+OPENROUTER_MODEL=openai/gpt-4.1-mini
+OPENROUTER_SITE_URL=https://your-vercel-domain.vercel.app
+OPENROUTER_APP_NAME=Assumption-Aware Agent Planner
+```
+
+Keep local secrets in `.env`; commit only `.env.example`.
 
 ## 3. Main Interface
 
@@ -362,7 +375,7 @@ LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=your_key_here
 ```
 
-For OpenAI:
+For OpenAI, only if explicitly opting back in:
 
 ```env
 LLM_PROVIDER=openai

@@ -49,7 +49,7 @@ function resolveProvider(): Provider {
     return "openai";
   }
 
-  return process.env.OPENROUTER_API_KEY ? "openrouter" : "openai";
+  return "openrouter";
 }
 
 function providerConfig(provider: Provider): ProviderConfig {

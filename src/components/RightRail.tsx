@@ -8,13 +8,22 @@ import {
   Database,
   HelpCircle,
   Loader2,
+  RotateCcw,
   Save,
   Shield,
-  ShieldAlert,
-  Trash2
+  ShieldAlert
 } from "lucide-react";
 import { EmptyState, ImpactBadge, Panel, SourceBadge } from "@/components/Panel";
-import type { AgentTrace, Assumption, AssumptionCritique, ConstraintWarning, Itinerary, UserMemory } from "@/types/travel";
+import type { UIText } from "@/i18n";
+import type {
+  AgentTrace,
+  Assumption,
+  AssumptionCritique,
+  ConstraintWarning,
+  Itinerary,
+  MemoryStatus,
+  UserMemory
+} from "@/types/travel";
 
 type RightRailProps = {
   prompt: string;
@@ -24,22 +33,19 @@ type RightRailProps = {
   warnings: ConstraintWarning[];
   trace: AgentTrace[];
   memory: UserMemory;
+  memoryStatus: MemoryStatus | null;
   analyzing: boolean;
   planning: boolean;
   onSaveMemory: () => void;
   onClearMemory: () => void;
-  labels: {
-    processTitle: string;
-    statusTitle: string;
-    memoryPanel: string;
-    whyTitle: string;
-    constraintSummary: string;
-  };
+  labels: UIText;
 };
 
 type StepState = "Done" | "Running" | "Needs User Input" | "Pending" | "Error";
 
 const expectedAgents: AgentTrace["agent"][] = [
+  "Conflict Detector Agent",
+  "Preference Probe Agent",
   "Preference Agent",
   "Assumption Critic Agent",
   "Planner Agent",
@@ -91,6 +97,10 @@ function lastTrace(trace: AgentTrace[], agent: AgentTrace["agent"]) {
   return [...trace].reverse().find((entry) => entry.agent === agent);
 }
 
+function agentLabel(labels: UIText, agent: AgentTrace["agent"]) {
+  return (labels.agentLabels as Partial<Record<AgentTrace["agent"], string>>)[agent] || agent;
+}
+
 function statusForAgent(agent: AgentTrace["agent"], trace: AgentTrace[], needsInput: boolean): StepState {
   const entry = lastTrace(trace, agent);
 
@@ -103,7 +113,7 @@ function statusForAgent(agent: AgentTrace["agent"], trace: AgentTrace[], needsIn
   }
 
   if (needsInput && (agent === "Planner Agent" || agent === "Constraint Checker Agent")) {
-    return agent === "Planner Agent" ? "Pending" : "Pending";
+    return "Pending";
   }
 
   if (entry?.status === "Complete") {
@@ -111,6 +121,34 @@ function statusForAgent(agent: AgentTrace["agent"], trace: AgentTrace[], needsIn
   }
 
   return "Pending";
+}
+
+function fallbackSummary(agent: AgentTrace["agent"], prompt: string, labels: UIText) {
+  if (agent === "Conflict Detector Agent") {
+    return prompt.trim() ? labels.readyInferPreferences : labels.waitingPrompt;
+  }
+
+  if (agent === "Preference Probe Agent") {
+    return labels.waitingConfirmedPreferences;
+  }
+
+  if (agent === "Preference Agent") {
+    return prompt.trim() ? labels.readyInferPreferences : labels.waitingPrompt;
+  }
+
+  if (agent === "Assumption Critic Agent") {
+    return labels.waitingAssumptionData;
+  }
+
+  if (agent === "Planner Agent") {
+    return labels.waitingConfirmedPreferences;
+  }
+
+  if (agent === "Constraint Checker Agent") {
+    return labels.waitingItineraryOutput;
+  }
+
+  return labels.readySaveMemory;
 }
 
 export function RightRail({
@@ -121,13 +159,13 @@ export function RightRail({
   warnings,
   trace,
   memory,
+  memoryStatus,
   analyzing,
   planning,
   onSaveMemory,
   onClearMemory,
   labels
 }: RightRailProps) {
-  const highImpactCount = critiques.filter((critique) => critique.impact === "High").length;
   const pendingHighImpact = critiques.filter((critique) => {
     if (critique.impact !== "High") {
       return false;
@@ -145,31 +183,19 @@ export function RightRail({
   const steps = expectedAgents.map((agent, index) => {
     const entry = lastTrace(trace, agent);
     const state = statusForAgent(agent, trace, needsInput);
-    const summary =
-      entry?.summary ||
-      (agent === "Preference Agent"
-        ? prompt.trim()
-          ? "Ready to infer likely preferences."
-          : "Waiting for a short prompt."
-        : agent === "Assumption Critic Agent"
-          ? "Waiting for assumption data."
-          : agent === "Planner Agent"
-            ? "Waiting for confirmed preferences."
-            : agent === "Constraint Checker Agent"
-              ? "Waiting for itinerary output."
-              : "Ready to save confirmed preferences.");
+    const summary = entry?.summary || fallbackSummary(agent, prompt, labels);
 
     return {
       agent,
       index: index + 1,
-      state: agent === "Planner Agent" && needsInput ? "Needs User Input" as StepState : state,
+      state: agent === "Planner Agent" && needsInput ? ("Needs User Input" as StepState) : state,
       summary
     };
   });
 
   return (
     <aside className="space-y-3">
-      <Panel title={labels.processTitle} eyebrow="Backend agent states" icon={<Bot className="size-4" />}>
+      <Panel title={labels.processTitle} eyebrow={labels.backendAgentStates} icon={<Bot className="size-4" />}>
         <div className="space-y-3">
           {steps.map((step, index) => (
             <div
@@ -202,8 +228,10 @@ export function RightRail({
                   {index < steps.length - 1 ? <div className="absolute top-9 h-8 border-l border-slate-200" /> : null}
                 </div>
                 <div className="min-w-0">
-                  <p className="text-sm font-black text-slate-950">{step.agent}</p>
-                  <p className={`mt-1 text-xs font-bold ${stateClass(step.state)}`}>{step.state}</p>
+                  <p className="text-sm font-black text-slate-950">{agentLabel(labels, step.agent)}</p>
+                  <p className={`mt-1 text-xs font-bold ${stateClass(step.state)}`}>
+                    {labels.stepStateLabels[step.state]}
+                  </p>
                   <p className="mt-1 line-clamp-2 text-xs font-semibold leading-5 text-slate-500">{step.summary}</p>
                 </div>
                 <div className="pt-1">{stepIcon(step.state)}</div>
@@ -213,13 +241,13 @@ export function RightRail({
         </div>
       </Panel>
 
-      <Panel title={labels.statusTitle} eyebrow="Live legend" icon={<ShieldAlert className="size-4" />}>
+      <Panel title={labels.statusTitle} eyebrow={labels.liveLegend} icon={<ShieldAlert className="size-4" />}>
         <div className="space-y-2">
           {[
-            { label: "Confirmed", count: acceptedCount, color: "bg-emerald-500", text: "text-emerald-700" },
-            { label: "Inferred", count: inferredCount, color: "bg-amber-500", text: "text-amber-700" },
-            { label: "Needs Check", count: pendingHighImpact, color: "bg-orange-500", text: "text-orange-700" },
-            { label: "Missing", count: missingCount, color: "bg-rose-500", text: "text-rose-700" }
+            { label: labels.confirmed, count: acceptedCount, color: "bg-emerald-500", text: "text-emerald-700" },
+            { label: labels.inferred, count: inferredCount, color: "bg-amber-500", text: "text-amber-700" },
+            { label: labels.needsCheck, count: pendingHighImpact, color: "bg-orange-500", text: "text-orange-700" },
+            { label: labels.missing, count: missingCount, color: "bg-rose-500", text: "text-rose-700" }
           ].map((item) => (
             <div key={item.label} className="flex items-center justify-between rounded-[8px] bg-slate-50 px-3 py-2">
               <div className="flex items-center gap-2">
@@ -234,39 +262,62 @@ export function RightRail({
 
       <Panel
         title={labels.memoryPanel}
-        eyebrow={`${memory.preferences.length} saved · ${memoryCount} applied`}
+        eyebrow={`${memory.preferences.length} ${labels.memoryCountLabel} · ${memoryCount} ${labels.memoryAppliedLabel}`}
         icon={<Database className="size-4" />}
         actions={
           <div className="flex gap-1">
             <button
               onClick={onSaveMemory}
               className="flex size-8 items-center justify-center rounded-[8px] border border-emerald-200 bg-emerald-50 text-emerald-700"
-              title="Save preferences"
+              title={labels.savePreferences}
             >
               <Save className="size-4" />
             </button>
             <button
               onClick={onClearMemory}
-              className="flex size-8 items-center justify-center rounded-[8px] border border-slate-200 bg-white text-slate-500"
-              title="Clear memory"
+              className="flex h-8 items-center justify-center gap-1 rounded-[8px] border border-slate-200 bg-white px-2 text-xs font-bold text-slate-600"
+              title={labels.resetMemory}
             >
-              <Trash2 className="size-4" />
+              <RotateCcw className="size-3.5" />
+              {labels.resetMemory}
             </button>
           </div>
         }
       >
+        <div className="mb-3 rounded-[8px] border border-slate-200 bg-slate-50 p-3">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <p className="text-xs font-black uppercase text-slate-400">{labels.memoryStatusTitle}</p>
+              <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">
+                {memoryStatus?.message || (memory.preferences.length > 0 ? labels.memoryNotUsed : labels.memoryEmpty)}
+              </p>
+            </div>
+            <span
+              className={`shrink-0 rounded-full border px-2 py-1 text-[11px] font-bold ${
+                memoryStatus?.used
+                  ? "border-sky-200 bg-sky-50 text-sky-700"
+                  : "border-slate-200 bg-white text-slate-500"
+              }`}
+            >
+              {memoryStatus?.used ? labels.basedOnMemory : labels.freshRequest}
+            </span>
+          </div>
+        </div>
+
         {memory.preferences.length === 0 ? (
-          <EmptyState title="No saved preferences" body="Confirmed values can be stored locally for future prompts." />
+          <EmptyState title={labels.noSavedPreferences} body={labels.noSavedPreferencesBody} />
         ) : (
           <div className="space-y-2">
             {memory.preferences.map((preference) => (
               <div key={preference.id} className="rounded-[8px] border border-slate-200 bg-white p-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-black text-slate-950">{preference.label}</p>
+                    <p className="truncate text-sm font-black text-slate-950">
+                      {labels.categoryLabels[preference.category] || preference.label}
+                    </p>
                     <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">{preference.value}</p>
                   </div>
-                  <SourceBadge source="Memory" />
+                  <SourceBadge source="Memory" labels={labels.sourceLabels} />
                 </div>
               </div>
             ))}
@@ -274,7 +325,7 @@ export function RightRail({
         )}
       </Panel>
 
-      <Panel title={labels.whyTitle} eyebrow="Explanation cards" icon={<HelpCircle className="size-4" />}>
+      <Panel title={labels.whyTitle} eyebrow={labels.explanationCards} icon={<HelpCircle className="size-4" />}>
         <div className="space-y-3">
           <div className="rounded-[8px] border border-violet-100 bg-violet-50 p-3">
             <div className="flex gap-3">
@@ -282,22 +333,18 @@ export function RightRail({
                 <Shield className="size-5" />
               </div>
               <div>
-                <p className="text-sm font-black text-violet-900">Why assumptions matter</p>
+                <p className="text-sm font-black text-violet-900">{labels.whyAssumptionsMatterTitle}</p>
                 <p className="mt-1 text-xs font-semibold leading-5 text-violet-800">
-                  Visible assumptions improve plan quality and allow agents to coordinate on what matters most.
+                  {labels.whyAssumptionsMatterBody}
                 </p>
               </div>
             </div>
           </div>
 
           <div className="rounded-[8px] border border-orange-100 bg-orange-50 p-3">
-            <p className="text-sm font-black text-orange-900">What happens next?</p>
+            <p className="text-sm font-black text-orange-900">{labels.whatNextTitle}</p>
             <div className="mt-2 space-y-2">
-              {[
-                "Confirmed preferences are passed to the Planner Agent.",
-                "Alternatives may change when assumptions change.",
-                "The Constraint Checker reviews feasibility after planning."
-              ].map((item) => (
+              {labels.whatNextItems.map((item) => (
                 <div key={item} className="flex items-start gap-2 text-xs font-semibold leading-5 text-orange-900/80">
                   <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-emerald-600" />
                   {item}
@@ -312,7 +359,7 @@ export function RightRail({
                 <div key={critique.id} className="rounded-[8px] border border-slate-200 bg-white p-3 shadow-sm">
                   <div className="flex items-start justify-between gap-2">
                     <p className="text-sm font-black text-slate-950">{critique.issue}</p>
-                    <ImpactBadge impact={critique.impact} />
+                    <ImpactBadge impact={critique.impact} labels={labels.impactLabels} />
                   </div>
                   <p className="mt-2 text-xs font-semibold leading-5 text-slate-500">{critique.suggestedResolution}</p>
                 </div>
@@ -322,16 +369,16 @@ export function RightRail({
         </div>
       </Panel>
 
-      <Panel title={labels.constraintSummary} eyebrow={`${warnings.length} warnings`} icon={<AlertCircle className="size-4" />}>
+      <Panel title={labels.constraintSummary} eyebrow={`${warnings.length} ${labels.warnings}`} icon={<AlertCircle className="size-4" />}>
         {warnings.length === 0 ? (
-          <EmptyState title="No feasibility output yet" body="Warnings appear after the Constraint Checker runs." />
+          <EmptyState title={labels.noFeasibilityTitle} body={labels.noFeasibilityBody} />
         ) : (
           <div className="space-y-2">
             {warnings.slice(0, 4).map((warning) => (
               <div key={warning.id} className="rounded-[8px] border border-slate-200 bg-white p-3">
                 <div className="flex items-start justify-between gap-2">
                   <p className="text-sm font-black text-slate-950">{warning.message}</p>
-                  <ImpactBadge impact={warning.impact} />
+                  <ImpactBadge impact={warning.impact} labels={labels.impactLabels} />
                 </div>
                 <p className="mt-1 text-xs font-semibold text-slate-500">{warning.recommendation}</p>
               </div>

@@ -7,23 +7,15 @@ For full operating instructions, workflow details, and agent explanations, see [
 ## Setup
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
 
 ## `.env` Instructions
 
-Copy `.env.example` to `.env` and add one provider key:
-
-```bash
-LLM_PROVIDER=openai
-OPENAI_API_KEY=your_openai_key
-OPENAI_MODEL=gpt-4.1-mini
-```
-
-Or use OpenRouter:
+Configure `.env` with OpenRouter:
 
 ```bash
 LLM_PROVIDER=openrouter
@@ -31,7 +23,30 @@ OPENROUTER_API_KEY=your_openrouter_key
 OPENROUTER_MODEL=openai/gpt-4.1-mini
 ```
 
+OpenAI remains available only if you explicitly set `LLM_PROVIDER=openai` and provide an `OPENAI_API_KEY`.
+
 The API routes intentionally call real LLM providers. There is no silent mock fallback; missing keys surface as route errors in the UI.
+
+## Deploying On Vercel
+
+Vercel can deploy this repository as a standard Next.js app. The included `vercel.json` keeps the install/build commands explicit:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm build
+```
+
+Set these environment variables in Vercel Project Settings:
+
+```bash
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=your_openrouter_key
+OPENROUTER_MODEL=openai/gpt-4.1-mini
+OPENROUTER_SITE_URL=https://your-vercel-domain.vercel.app
+OPENROUTER_APP_NAME=Assumption-Aware Agent Planner
+```
+
+Do not commit `.env`; use `.env.example` as the safe template.
 
 ## Project Overview
 

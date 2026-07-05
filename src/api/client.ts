@@ -1,4 +1,11 @@
-import type { AnalyzeRequest, AnalyzeResponse, PlanRequest, PlanResponse } from "@/types/travel";
+import type {
+  AnalyzeRequest,
+  AnalyzeResponse,
+  PlanRequest,
+  PlanResponse,
+  PreferenceProbeRequest,
+  PreferenceProbeResponse
+} from "@/types/travel";
 
 async function postJson<Response>(url: string, payload: unknown): Promise<Response> {
   const response = await fetch(url, {
@@ -19,6 +26,10 @@ async function postJson<Response>(url: string, payload: unknown): Promise<Respon
 
 export function analyzePreferences(payload: AnalyzeRequest) {
   return postJson<AnalyzeResponse>("/api/analyze", payload);
+}
+
+export function learnPreferences(payload: PreferenceProbeRequest) {
+  return postJson<PreferenceProbeResponse>("/api/probe", payload);
 }
 
 export function generateItinerary(payload: PlanRequest) {

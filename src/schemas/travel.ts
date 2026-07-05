@@ -24,6 +24,15 @@ type ConstraintWarningTypeValue =
   | "bookingRisk"
   | "openingHoursRisk"
   | "pacingIssue";
+type CostCategoryValue =
+  | "accommodation"
+  | "transport"
+  | "food"
+  | "attractions"
+  | "localTransit"
+  | "optionalActivities"
+  | "other";
+type LocationStatusValue = "Exact" | "Approximate" | "Unavailable";
 
 const categoryAliases: Record<string, PreferenceCategoryValue> = {
   accommodation: "accommodationArea",
@@ -95,6 +104,52 @@ const warningTypeAliases: Record<string, ConstraintWarningTypeValue> = {
   pacing: "pacingIssue"
 };
 
+const costCategoryAliases: Record<string, CostCategoryValue> = {
+  accommodation: "accommodation",
+  accommodations: "accommodation",
+  hotel: "accommodation",
+  lodging: "accommodation",
+  stay: "accommodation",
+  transport: "transport",
+  transportation: "transport",
+  train: "transport",
+  flight: "transport",
+  bus: "transport",
+  intercity: "transport",
+  food: "food",
+  dining: "food",
+  meals: "food",
+  meal: "food",
+  attractions: "attractions",
+  attraction: "attractions",
+  tickets: "attractions",
+  ticket: "attractions",
+  admissions: "attractions",
+  admission: "attractions",
+  localtransit: "localTransit",
+  local_transit: "localTransit",
+  local_transport: "localTransit",
+  metro: "localTransit",
+  taxi: "localTransit",
+  optionalactivities: "optionalActivities",
+  optional_activities: "optionalActivities",
+  optional: "optionalActivities",
+  activities: "optionalActivities",
+  other: "other",
+  misc: "other",
+  miscellaneous: "other"
+};
+
+const costCategoryLabels: Record<CostCategoryValue, string> = {
+  accommodation: "Accommodation",
+  transport: "Transport",
+  food: "Food",
+  attractions: "Attractions",
+  localTransit: "Local transit",
+  optionalActivities: "Optional activities",
+  other: "Other"
+};
+
 function asRecord(input: unknown): Record<string, unknown> {
   return input && typeof input === "object" && !Array.isArray(input) ? (input as Record<string, unknown>) : {};
 }
@@ -113,6 +168,28 @@ function asText(input: unknown, fallback = ""): string {
   }
 
   return fallback;
+}
+
+function routePlaceRef(input: unknown, fallback: string): string {
+  const direct = asText(input);
+
+  if (direct) {
+    return direct;
+  }
+
+  const record = asRecord(input);
+  return asText(
+    record.id ??
+      record.placeId ??
+      record.place_id ??
+      record.sourceActivityId ??
+      record.activityId ??
+      record.title ??
+      record.name ??
+      record.location ??
+      record.label,
+    fallback
+  );
 }
 
 function normalizedCategory(input: unknown): PreferenceCategoryValue {
@@ -189,6 +266,43 @@ function normalizedWarningType(input: unknown): ConstraintWarningTypeValue {
   return warningTypeAliases[key] || "pacingIssue";
 }
 
+function normalizedCostCategory(input: unknown): CostCategoryValue {
+  const key = asText(input, "other").replace(/[\s/-]+/g, "_").replace(/[^\w]/g, "").toLowerCase();
+  return costCategoryAliases[key] || "other";
+}
+
+function normalizedBoolean(input: unknown, fallback = false): boolean {
+  if (typeof input === "boolean") {
+    return input;
+  }
+
+  const value = asText(input).toLowerCase();
+
+  if (["true", "yes", "y", "1", "change", "changed", "different"].includes(value)) {
+    return true;
+  }
+
+  if (["false", "no", "n", "0", "same", "unchanged"].includes(value)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+function normalizedLocationStatus(input: unknown, hasCoordinates: boolean): LocationStatusValue {
+  const value = asText(input, hasCoordinates ? "Approximate" : "Unavailable").toLowerCase();
+
+  if (value.includes("exact")) {
+    return "Exact";
+  }
+
+  if (value.includes("approx") || value.includes("rough") || value.includes("estimated")) {
+    return "Approximate";
+  }
+
+  return hasCoordinates ? "Approximate" : "Unavailable";
+}
+
 export const ImpactSchema = z.enum(["Low", "Medium", "High"]);
 export const LanguageSchema = z.enum(["en", "zh"]);
 
@@ -210,6 +324,15 @@ export const PreferenceCategorySchema = z.enum([
 
 export const PreferenceSourceSchema = z.enum(["Inferred", "Memory", "User"]);
 export const AssumptionStatusSchema = z.enum(["Pending", "Accepted", "Edited", "Rejected"]);
+export const CostCategorySchema = z.enum([
+  "accommodation",
+  "transport",
+  "food",
+  "attractions",
+  "localTransit",
+  "optionalActivities",
+  "other"
+]);
 
 export const AssumptionSchema = z.preprocess((input) => {
   const record = asRecord(input);
@@ -298,6 +421,132 @@ export const ConfirmedPreferenceSchema = z.object({
   source: PreferenceSourceSchema
 });
 
+export const ConflictProbeOptionSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const label = asText(record.label ?? record.title ?? record.value ?? record.option, "Preference option");
+
+  return {
+    id: asText(record.id, label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "option"),
+    label,
+    planningImpact: asText(
+      record.planningImpact ?? record.impact ?? record.impact_per_option ?? record.effect,
+      "This choice changes itinerary pacing, routing, or trade-offs."
+    )
+  };
+}, z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  planningImpact: z.string().min(1)
+}));
+
+export const ConflictProbeImpactSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+
+  return {
+    optionId: asText(record.optionId ?? record.option_id ?? record.id ?? record.option, "option"),
+    impact: asText(record.impact ?? record.planningImpact ?? record.planning_impact, "Changes the itinerary strategy.")
+  };
+}, z.object({
+  optionId: z.string().min(1),
+  impact: z.string().min(1)
+}));
+
+export const ConflictProbeSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const options = Array.isArray(record.options) ? record.options : [];
+  const rawImpact = record.impactPerOption ?? record.impact_per_option ?? record.impacts;
+  const impactPerOption = Array.isArray(rawImpact)
+    ? rawImpact
+    : Object.entries(asRecord(rawImpact)).map(([optionId, impact]) => ({ optionId, impact }));
+
+  return {
+    question: asText(record.question ?? record.prompt, "Which trade-off feels closer to what you want?"),
+    options,
+    impactPerOption
+  };
+}, z.object({
+  question: z.string().min(1),
+  options: z.array(ConflictProbeOptionSchema).min(2).max(6),
+  impactPerOption: z.array(ConflictProbeImpactSchema)
+}));
+
+export const DetectedConflictSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const title = asText(record.title ?? record.name ?? record.conflictName ?? record.conflict_name, "Planning trade-off");
+
+  return {
+    id: asText(record.id, title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "conflict"),
+    title,
+    explanation: asText(
+      record.explanation ?? record.whyItMatters ?? record.why_it_matters ?? record.reason,
+      "This trade-off can materially change the itinerary."
+    ),
+    hiddenPreference: asText(
+      record.hiddenPreference ?? record.hidden_preference ?? record.preference,
+      "The planner needs to uncover the traveler's preferred trade-off."
+    ),
+    confidence: normalizedConfidence(record.confidence),
+    probe: record.probe ?? record.question ?? {}
+  };
+}, z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  explanation: z.string().min(1),
+  hiddenPreference: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+  probe: ConflictProbeSchema
+}));
+
+export const PreferenceProbeAnswerSchema = z.object({
+  conflictId: z.string().min(1),
+  optionId: z.string().min(1),
+  answer: z.string().min(1),
+  planningImpact: z.string().min(1)
+});
+
+export const LearnedPreferenceSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const category = normalizedCategory(record.category ?? record.type ?? record.key);
+  const value = asText(record.value ?? record.answer ?? record.preference, "Learned preference");
+
+  return {
+    id: asText(record.id, `learned-${category}-${value}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")),
+    conflictId: asText(record.conflictId ?? record.conflict_id ?? record.sourceConflictId ?? record.source_conflict_id, "conflict"),
+    category,
+    label: asText(record.label ?? record.title, categoryLabels[category]),
+    value,
+    planningImpact: asText(
+      record.planningImpact ?? record.impact ?? record.planning_impact,
+      "Use this preference to shape route, pace, comfort, and activity choices."
+    ),
+    source: normalizedSource(record.source ?? "User"),
+    confidence: normalizedConfidence(record.confidence)
+  };
+}, z.object({
+  id: z.string().min(1),
+  conflictId: z.string().min(1),
+  category: PreferenceCategorySchema,
+  label: z.string().min(1),
+  value: z.string().min(1),
+  planningImpact: z.string().min(1),
+  source: PreferenceSourceSchema,
+  confidence: z.number().min(0).max(1)
+}));
+
+export const PreferenceInfluenceSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+
+  return {
+    preferenceId: asText(record.preferenceId ?? record.preference_id ?? record.id, "preference"),
+    preference: asText(record.preference ?? record.label ?? record.value, "Learned preference"),
+    influence: asText(record.influence ?? record.planningImpact ?? record.planning_impact ?? record.reason, "Influenced the itinerary.")
+  };
+}, z.object({
+  preferenceId: z.string().min(1),
+  preference: z.string().min(1),
+  influence: z.string().min(1)
+}));
+
 function normalizedNonNegativeNumber(input: unknown, fallback = 0): number {
   const value = typeof input === "number" ? input : Number(asText(input, String(fallback)));
   return Number.isFinite(value) ? Math.max(0, value) : fallback;
@@ -314,15 +563,253 @@ function dayNumberFromRaw(input: unknown, fallback = 1): number {
   return Math.max(1, Math.round(value));
 }
 
+function normalizedNullableDay(input: unknown): number | null {
+  if (input === undefined || input === null || asText(input).toLowerCase() === "all") {
+    return null;
+  }
+
+  return Math.max(1, Math.round(normalizedNonNegativeNumber(input, 1)));
+}
+
+function normalizedCoordinateNumber(input: unknown, min: number, max: number): number | null {
+  const value = typeof input === "number" ? input : Number(asText(input));
+
+  if (!Number.isFinite(value) || value < min || value > max) {
+    return null;
+  }
+
+  return value;
+}
+
+function normalizedCoordinates(input: unknown): { lat: number; lng: number } | null {
+  if (Array.isArray(input)) {
+    const lat = normalizedCoordinateNumber(input[0], -90, 90);
+    const lng = normalizedCoordinateNumber(input[1], -180, 180);
+    return lat === null || lng === null ? null : { lat, lng };
+  }
+
+  const record = asRecord(input);
+  const lat = normalizedCoordinateNumber(record.lat ?? record.latitude, -90, 90);
+  const lng = normalizedCoordinateNumber(record.lng ?? record.lon ?? record.long ?? record.longitude, -180, 180);
+
+  return lat === null || lng === null ? null : { lat, lng };
+}
+
+export const CoordinatesSchema = z.object({
+  lat: z.number().min(-90).max(90),
+  lng: z.number().min(-180).max(180)
+});
+
+export const CostBreakdownItemSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const category = normalizedCostCategory(record.category ?? record.type ?? record.name);
+  const amount = normalizedNonNegativeNumber(
+    record.amountEur ??
+      record.estimatedCostEur ??
+      record.estimatedCostEUR ??
+      record.totalEur ??
+      record.totalEUR ??
+      record.costEur ??
+      record.costEUR
+  );
+  const perDayRaw = record.perDayEur ?? record.perDayEUR ?? record.dailyEstimateEur ?? record.dailyEstimateEUR;
+  const totalRaw = record.totalEur ?? record.totalEUR ?? record.totalEstimateEur ?? record.totalEstimateEUR;
+
+  return {
+    id: asText(record.id, category),
+    category,
+    label: asText(record.label ?? record.title ?? record.name, costCategoryLabels[category]),
+    amountEur: amount,
+    perDayEur: perDayRaw === undefined || perDayRaw === null ? null : normalizedNonNegativeNumber(perDayRaw),
+    totalEur: totalRaw === undefined || totalRaw === null ? null : normalizedNonNegativeNumber(totalRaw),
+    basis: asText(record.basis ?? record.assumption ?? record.rationale ?? record.note, "Rough category estimate."),
+    isRoughEstimate: normalizedBoolean(record.isRoughEstimate ?? record.roughEstimate ?? record.rough, true)
+  };
+}, z.object({
+  id: z.string().min(1),
+  category: CostCategorySchema,
+  label: z.string().min(1),
+  amountEur: z.number().min(0),
+  perDayEur: z.number().min(0).nullable(),
+  totalEur: z.number().min(0).nullable(),
+  basis: z.string().min(1),
+  isRoughEstimate: z.boolean()
+}));
+
+export const TransportAssumptionSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const from = asText(record.from ?? record.origin ?? record.start, "Origin not specified");
+  const to = asText(record.to ?? record.destination ?? record.end, "Destination not specified");
+
+  return {
+    id: asText(record.id, `${from}-to-${to}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "transport"),
+    from,
+    to,
+    mode: asText(record.mode ?? record.transportMode ?? record.transport, "Unspecified transport"),
+    estimatedTravelTimeMinutes: normalizedNonNegativeNumber(
+      record.estimatedTravelTimeMinutes ?? record.travelTimeMinutes ?? record.durationMinutes ?? record.minutes
+    ),
+    travelBurden: normalizedImpact(record.travelBurden ?? record.burden ?? record.impact),
+    confidence: normalizedConfidence(record.confidence),
+    status: normalizedStatus(record.status),
+    rationale: asText(record.rationale ?? record.reason ?? record.note, "Transport assumption inferred from the trip request.")
+  };
+}, z.object({
+  id: z.string().min(1),
+  from: z.string().min(1),
+  to: z.string().min(1),
+  mode: z.string().min(1),
+  estimatedTravelTimeMinutes: z.number().min(0),
+  travelBurden: ImpactSchema,
+  confidence: z.number().min(0).max(1),
+  status: AssumptionStatusSchema,
+  rationale: z.string().min(1)
+}));
+
+export const AccommodationAssumptionSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const night = Math.max(1, Math.round(normalizedNonNegativeNumber(record.night ?? record.nightNumber ?? record.dayNumber, 1)));
+
+  return {
+    id: asText(record.id, `night-${night}-accommodation`),
+    night,
+    area: asText(record.area ?? record.location ?? record.neighborhood ?? record.city, "Accommodation area not specified"),
+    accommodationStyle: asText(record.accommodationStyle ?? record.style ?? record.level ?? record.type, "Unspecified accommodation"),
+    changeFromPreviousNight: normalizedBoolean(record.changeFromPreviousNight ?? record.changeAccommodation ?? record.changed, night > 1),
+    confidence: normalizedConfidence(record.confidence),
+    status: normalizedStatus(record.status),
+    rationale: asText(record.rationale ?? record.reason ?? record.note, "Accommodation assumption inferred from the trip request.")
+  };
+}, z.object({
+  id: z.string().min(1),
+  night: z.number().int().min(1),
+  area: z.string().min(1),
+  accommodationStyle: z.string().min(1),
+  changeFromPreviousNight: z.boolean(),
+  confidence: z.number().min(0).max(1),
+  status: AssumptionStatusSchema,
+  rationale: z.string().min(1)
+}));
+
+export const CostAssumptionSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const category = normalizedCostCategory(record.category ?? record.type ?? record.name);
+
+  return {
+    id: asText(record.id, `cost-${category}`),
+    category,
+    label: asText(record.label ?? record.title ?? record.name, costCategoryLabels[category]),
+    perDayEstimateEur: normalizedNonNegativeNumber(
+      record.perDayEstimateEur ?? record.perDayEstimateEUR ?? record.dailyEstimateEur ?? record.dailyEstimateEUR
+    ),
+    totalEstimateEur: normalizedNonNegativeNumber(
+      record.totalEstimateEur ?? record.totalEstimateEUR ?? record.totalEur ?? record.totalEUR
+    ),
+    confidence: normalizedConfidence(record.confidence),
+    status: normalizedStatus(record.status),
+    basis: asText(record.basis ?? record.assumption ?? record.rationale ?? record.note, "Rough estimate based on stated preferences."),
+    isRoughEstimate: normalizedBoolean(record.isRoughEstimate ?? record.roughEstimate ?? record.rough, true)
+  };
+}, z.object({
+  id: z.string().min(1),
+  category: CostCategorySchema,
+  label: z.string().min(1),
+  perDayEstimateEur: z.number().min(0),
+  totalEstimateEur: z.number().min(0),
+  confidence: z.number().min(0).max(1),
+  status: AssumptionStatusSchema,
+  basis: z.string().min(1),
+  isRoughEstimate: z.boolean()
+}));
+
+export const MapPlaceSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const coordinates = normalizedCoordinates(
+    record.coordinates ?? record.coordinate ?? record.coords ?? {
+      lat: record.lat ?? record.latitude,
+      lng: record.lng ?? record.lon ?? record.longitude
+    }
+  );
+  const title = asText(record.title ?? record.name ?? record.place, "Place");
+
+  return {
+    id: asText(record.id ?? record.placeId ?? record.place_id, title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "place"),
+    dayNumber: normalizedNullableDay(record.dayNumber ?? record.day),
+    title,
+    location: asText(record.location ?? record.area ?? record.address, title),
+    coordinates,
+    locationStatus: normalizedLocationStatus(record.locationStatus ?? record.status ?? record.coordinateStatus, Boolean(coordinates)),
+    sourceActivityId: record.sourceActivityId === undefined || record.sourceActivityId === null ? null : asText(record.sourceActivityId),
+    unavailableReason: coordinates
+      ? null
+      : asText(record.unavailableReason ?? record.locationUnavailableReason ?? record.reason, "Coordinates unavailable.")
+  };
+}, z.object({
+  id: z.string().min(1),
+  dayNumber: z.number().int().min(1).nullable(),
+  title: z.string().min(1),
+  location: z.string().min(1),
+  coordinates: CoordinatesSchema.nullable(),
+  locationStatus: z.enum(["Exact", "Approximate", "Unavailable"]),
+  sourceActivityId: z.string().nullable(),
+  unavailableReason: z.string().nullable()
+}));
+
+export const RouteSegmentSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const dayNumber = normalizedNullableDay(record.dayNumber ?? record.day);
+  const fromPlaceId = routePlaceRef(
+    record.fromPlaceId ?? record.fromId ?? record.originId ?? record.originPlaceId ?? record.from ?? record.origin ?? record.start,
+    dayNumber ? `day-${dayNumber}-route-origin` : "route-origin"
+  );
+  const toPlaceId = routePlaceRef(
+    record.toPlaceId ?? record.toId ?? record.destinationId ?? record.destinationPlaceId ?? record.to ?? record.destination ?? record.end,
+    dayNumber ? `day-${dayNumber}-route-destination` : "route-destination"
+  );
+
+  return {
+    id: asText(record.id, `${fromPlaceId}-to-${toPlaceId}`.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "") || "route-segment"),
+    dayNumber,
+    fromPlaceId,
+    toPlaceId,
+    transportMode: asText(record.transportMode ?? record.mode ?? record.transport, "Unspecified transport"),
+    estimatedTravelTimeMinutes: normalizedNonNegativeNumber(
+      record.estimatedTravelTimeMinutes ?? record.travelTimeMinutes ?? record.durationMinutes ?? record.minutes
+    ),
+    distanceKm: normalizedNonNegativeNumber(record.distanceKm ?? record.km ?? record.distance),
+    notes: asText(record.notes ?? record.note ?? record.rationale, "Estimated movement between places.")
+  };
+}, z.object({
+  id: z.string().min(1),
+  dayNumber: z.number().int().min(1).nullable(),
+  fromPlaceId: z.string().min(1),
+  toPlaceId: z.string().min(1),
+  transportMode: z.string().min(1),
+  estimatedTravelTimeMinutes: z.number().min(0),
+  distanceKm: z.number().min(0),
+  notes: z.string().min(1)
+}));
+
 export const ActivitySchema = z.preprocess((input) => {
   const record = asRecord(input);
   const title = asText(record.title ?? record.name ?? record.activity, "Activity");
+  const coordinates = normalizedCoordinates(
+    record.coordinates ?? record.coordinate ?? record.coords ?? {
+      lat: record.lat ?? record.latitude,
+      lng: record.lng ?? record.lon ?? record.longitude
+    }
+  );
 
   return {
     id: asText(record.id, title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "activity"),
     time: asText(record.time ?? record.startTime ?? record.timeslot, "Flexible"),
     title,
     location: asText(record.location ?? record.area ?? record.neighborhood, title),
+    coordinates,
+    locationStatus: normalizedLocationStatus(record.locationStatus ?? record.coordinateStatus, Boolean(coordinates)),
+    locationUnavailableReason: coordinates
+      ? null
+      : asText(record.locationUnavailableReason ?? record.unavailableReason ?? record.geocodingStatus ?? record.reason, "Coordinates unavailable."),
     description: asText(record.description ?? record.note ?? record.summary, "Planned activity."),
     estimatedCostEur: normalizedNonNegativeNumber(
       record.estimatedCostEur ?? record.estimatedCostEUR ?? record.estimatedCost ?? record.costEur ?? record.costEUR
@@ -343,6 +830,9 @@ export const ActivitySchema = z.preprocess((input) => {
   time: z.string().min(1),
   title: z.string().min(1),
   location: z.string().min(1),
+  coordinates: CoordinatesSchema.nullable(),
+  locationStatus: z.enum(["Exact", "Approximate", "Unavailable"]),
+  locationUnavailableReason: z.string().nullable(),
   description: z.string().min(1),
   estimatedCostEur: z.number().min(0),
   walkingKm: z.number().min(0),
@@ -391,6 +881,13 @@ export const ItineraryDaySchema = z.preprocess((input) => {
     theme: asText(record.theme ?? record.focus ?? record.subtitle ?? record.notes, `Day ${dayNumber} plan`),
     activities,
     alternatives,
+    costBreakdown: Array.isArray(record.costBreakdown ?? record.costs ?? record.costCategories)
+      ? (record.costBreakdown ?? record.costs ?? record.costCategories)
+      : [],
+    routeSegments: Array.isArray(record.routeSegments ?? record.transportSegments ?? record.movements)
+      ? (record.routeSegments ?? record.transportSegments ?? record.movements)
+      : [],
+    accommodation: record.accommodation ?? record.stay ?? null,
     totalWalkingKm: normalizedNonNegativeNumber(
       record.totalWalkingKm ?? record.walkingKm ?? record.estimatedWalkingKm,
       activities.reduce((sum, activity) => sum + normalizedNonNegativeNumber(asRecord(activity).estimatedWalkingKm ?? asRecord(activity).walkingKm), 0)
@@ -419,6 +916,9 @@ export const ItineraryDaySchema = z.preprocess((input) => {
   theme: z.string().min(1),
   activities: z.array(ActivitySchema),
   alternatives: z.array(AlternativeOptionSchema),
+  costBreakdown: z.array(CostBreakdownItemSchema),
+  routeSegments: z.array(RouteSegmentSchema),
+  accommodation: AccommodationAssumptionSchema.nullable(),
   totalWalkingKm: z.number().min(0),
   totalTravelTimeMinutes: z.number().min(0),
   estimatedCostEur: z.number().min(0),
@@ -436,6 +936,21 @@ export const ItineraryOptionSchema = z.preprocess((input) => {
     positioning: asText(record.positioning ?? record.focus ?? record.description, "Preference-aligned itinerary option."),
     fitSummary: asText(record.fitSummary ?? record.summary ?? record.description, "Built from confirmed preferences."),
     days,
+    mapPlaces: Array.isArray(record.mapPlaces ?? record.places ?? record.routePlaces)
+      ? (record.mapPlaces ?? record.places ?? record.routePlaces)
+      : [],
+    routeSegments: Array.isArray(record.routeSegments ?? record.transportSegments ?? record.movements)
+      ? (record.routeSegments ?? record.transportSegments ?? record.movements)
+      : [],
+    costBreakdown: Array.isArray(record.costBreakdown ?? record.costs ?? record.costCategories)
+      ? (record.costBreakdown ?? record.costs ?? record.costCategories)
+      : [],
+    costAssumptions: Array.isArray(record.costAssumptions ?? record.costBasis ?? record.costNotes)
+      ? (record.costAssumptions ?? record.costBasis ?? record.costNotes)
+      : [],
+    preferenceInfluences: Array.isArray(record.preferenceInfluences ?? record.learnedPreferenceInfluences ?? record.preference_influences)
+      ? (record.preferenceInfluences ?? record.learnedPreferenceInfluences ?? record.preference_influences)
+      : [],
     estimatedTotalCostEur: normalizedNonNegativeNumber(
       record.estimatedTotalCostEur ?? record.totalCostEUR ?? record.totalCostEur,
       days.reduce(
@@ -451,6 +966,11 @@ export const ItineraryOptionSchema = z.preprocess((input) => {
   positioning: z.string().min(1),
   fitSummary: z.string().min(1),
   days: z.array(ItineraryDaySchema).min(1),
+  mapPlaces: z.array(MapPlaceSchema),
+  routeSegments: z.array(RouteSegmentSchema),
+  costBreakdown: z.array(CostBreakdownItemSchema),
+  costAssumptions: z.array(CostAssumptionSchema),
+  preferenceInfluences: z.array(PreferenceInfluenceSchema),
   estimatedTotalCostEur: z.number().min(0)
 }));
 
@@ -529,6 +1049,8 @@ export const ConstraintWarningSchema = z.preprocess((input) => {
 
 export const AgentTraceSchema = z.object({
   agent: z.enum([
+    "Conflict Detector Agent",
+    "Preference Probe Agent",
     "Preference Agent",
     "Assumption Critic Agent",
     "Planner Agent",
@@ -556,12 +1078,72 @@ export const UserMemorySchema = z.object({
   tripCount: z.number().int().min(0)
 });
 
-export const PreferenceAgentOutputSchema = z.object({
+export const MemoryStatusSchema = z.object({
+  used: z.boolean(),
+  preferenceCount: z.number().int().min(0),
+  appliedPreferenceCount: z.number().int().min(0),
+  message: z.string().min(1)
+});
+
+export const ConflictDetectorOutputSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+
+  return {
+    summary: asText(record.summary ?? record.overview, "Detected latent planning conflicts."),
+    detectedConflicts: Array.isArray(record.detectedConflicts ?? record.detected_conflicts ?? record.conflicts)
+      ? (record.detectedConflicts ?? record.detected_conflicts ?? record.conflicts)
+      : []
+  };
+}, z.object({
+  summary: z.string().min(1),
+  detectedConflicts: z.array(DetectedConflictSchema).min(1)
+}));
+
+export const PreferenceAgentOutputSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+
+  return {
+    summary: asText(record.summary, "Detected travel preferences."),
+    assumptions: Array.isArray(record.assumptions) ? record.assumptions : [],
+    missingPreferences: Array.isArray(record.missingPreferences) ? record.missingPreferences : [],
+    memoryDerivedPreferenceIds: Array.isArray(record.memoryDerivedPreferenceIds) ? record.memoryDerivedPreferenceIds : [],
+    transportAssumptions: Array.isArray(record.transportAssumptions) ? record.transportAssumptions : [],
+    accommodationAssumptions: Array.isArray(record.accommodationAssumptions) ? record.accommodationAssumptions : [],
+    costAssumptions: Array.isArray(record.costAssumptions) ? record.costAssumptions : []
+  };
+}, z.object({
   summary: z.string().min(1),
   assumptions: z.array(AssumptionSchema).min(1),
   missingPreferences: z.array(MissingPreferenceSchema),
+  memoryDerivedPreferenceIds: z.array(z.string()),
+  transportAssumptions: z.array(TransportAssumptionSchema),
+  accommodationAssumptions: z.array(AccommodationAssumptionSchema),
+  costAssumptions: z.array(CostAssumptionSchema)
+}));
+
+export const PreferenceProbeAgentOutputSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+
+  return {
+    summary: asText(record.summary ?? record.overview, "Learned preferences from probe answers."),
+    learnedPreferences: Array.isArray(record.learnedPreferences ?? record.learned_preferences)
+      ? (record.learnedPreferences ?? record.learned_preferences)
+      : [],
+    assumptions: Array.isArray(record.assumptions) ? record.assumptions : [],
+    transportAssumptions: Array.isArray(record.transportAssumptions) ? record.transportAssumptions : [],
+    accommodationAssumptions: Array.isArray(record.accommodationAssumptions) ? record.accommodationAssumptions : [],
+    costAssumptions: Array.isArray(record.costAssumptions) ? record.costAssumptions : [],
+    memoryDerivedPreferenceIds: Array.isArray(record.memoryDerivedPreferenceIds) ? record.memoryDerivedPreferenceIds : []
+  };
+}, z.object({
+  summary: z.string().min(1),
+  learnedPreferences: z.array(LearnedPreferenceSchema).min(1),
+  assumptions: z.array(AssumptionSchema).min(1),
+  transportAssumptions: z.array(TransportAssumptionSchema),
+  accommodationAssumptions: z.array(AccommodationAssumptionSchema),
+  costAssumptions: z.array(CostAssumptionSchema),
   memoryDerivedPreferenceIds: z.array(z.string())
-});
+}));
 
 export const AssumptionCriticOutputSchema = z.object({
   summary: z.string().min(1),
@@ -593,19 +1175,51 @@ export const ConstraintCheckerOutputSchema = z.object({
 export const AnalyzeRequestSchema = z.object({
   prompt: z.string().min(4),
   memory: UserMemorySchema.nullable(),
+  learnedPreferences: z.array(LearnedPreferenceSchema).default([]),
   language: LanguageSchema.default("en")
 });
 
 export const AnalyzeResponseSchema = z.object({
+  detectedConflicts: z.array(DetectedConflictSchema),
   assumptions: z.array(AssumptionSchema),
+  transportAssumptions: z.array(TransportAssumptionSchema),
+  accommodationAssumptions: z.array(AccommodationAssumptionSchema),
+  costAssumptions: z.array(CostAssumptionSchema),
+  learnedPreferences: z.array(LearnedPreferenceSchema),
   missingPreferences: z.array(MissingPreferenceSchema),
   critiques: z.array(AssumptionCritiqueSchema),
+  memoryStatus: MemoryStatusSchema,
+  trace: z.array(AgentTraceSchema)
+});
+
+export const PreferenceProbeRequestSchema = z.object({
+  prompt: z.string().min(4),
+  detectedConflicts: z.array(DetectedConflictSchema),
+  probeAnswers: z.array(PreferenceProbeAnswerSchema),
+  memory: UserMemorySchema.nullable(),
+  language: LanguageSchema.default("en")
+});
+
+export const PreferenceProbeResponseSchema = z.object({
+  learnedPreferences: z.array(LearnedPreferenceSchema),
+  assumptions: z.array(AssumptionSchema),
+  transportAssumptions: z.array(TransportAssumptionSchema),
+  accommodationAssumptions: z.array(AccommodationAssumptionSchema),
+  costAssumptions: z.array(CostAssumptionSchema),
+  critiques: z.array(AssumptionCritiqueSchema),
+  memoryStatus: MemoryStatusSchema,
   trace: z.array(AgentTraceSchema)
 });
 
 export const PlanRequestSchema = z.object({
   prompt: z.string().min(4),
+  detectedConflicts: z.array(DetectedConflictSchema).default([]),
+  probeAnswers: z.array(PreferenceProbeAnswerSchema).default([]),
+  learnedPreferences: z.array(LearnedPreferenceSchema).default([]),
   assumptions: z.array(AssumptionSchema),
+  transportAssumptions: z.array(TransportAssumptionSchema).default([]),
+  accommodationAssumptions: z.array(AccommodationAssumptionSchema).default([]),
+  costAssumptions: z.array(CostAssumptionSchema).default([]),
   confirmedPreferences: z.array(ConfirmedPreferenceSchema),
   memory: UserMemorySchema.nullable(),
   language: LanguageSchema.default("en")
@@ -614,5 +1228,6 @@ export const PlanRequestSchema = z.object({
 export const PlanResponseSchema = z.object({
   itinerary: ItinerarySchema,
   warnings: z.array(ConstraintWarningSchema),
+  memoryStatus: MemoryStatusSchema,
   trace: z.array(AgentTraceSchema)
 });

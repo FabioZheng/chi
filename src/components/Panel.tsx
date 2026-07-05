@@ -50,18 +50,18 @@ export function Panel({ title, eyebrow, icon, actions, children, className = "" 
   );
 }
 
-export function ImpactBadge({ impact }: { impact: Impact }) {
+export function ImpactBadge({ impact, labels }: { impact: Impact; labels?: Record<Impact, string> }) {
   return (
     <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${impactClasses[impact]}`}>
-      {impact}
+      {labels?.[impact] || impact}
     </span>
   );
 }
 
-export function SourceBadge({ source }: { source: PreferenceSource }) {
+export function SourceBadge({ source, labels }: { source: PreferenceSource; labels?: Record<PreferenceSource, string> }) {
   return (
     <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${sourceClasses[source]}`}>
-      {source}
+      {labels?.[source] || source}
     </span>
   );
 }
