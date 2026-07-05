@@ -84,6 +84,7 @@ const flowText = {
     promptTitle: "Lazy Prompt",
     promptBody: "Describe the trip loosely. The system will look for hidden trade-offs instead of showing a static preference form.",
     promptPlaceholder: "e.g. Plan a trip to the Dolomites in September",
+    promptTooShort: "Type at least 4 characters",
     detectConflicts: "Detect Conflicts",
     detectingConflicts: "Detecting conflicts",
     conflictsTitle: "Conflict Detection",
@@ -127,6 +128,13 @@ const flowText = {
     preferenceHistory: "Detected Preferences",
     currentCheckpoint: "Current Checkpoint",
     planningSteps: "Planning Steps",
+    assumptionValue: "Planning assumption",
+    assumptionReason: "Why this was inferred",
+    useAssumption: "Use",
+    reviewLater: "Review",
+    excludeAssumption: "Exclude",
+    assumptionDecision: "Planning decision",
+    assumptionsReadySummary: "ready for itinerary generation",
     traceTitle: "Agent trace"
   },
   zh: {
@@ -139,6 +147,7 @@ const flowText = {
     promptTitle: "模糊提示",
     promptBody: "简单描述行程，系统会寻找隐藏取舍，而不是展示静态偏好表单。",
     promptPlaceholder: "例如：帮我规划九月去多洛米蒂的旅行",
+    promptTooShort: "请至少输入 4 个字符",
     detectConflicts: "检测冲突",
     detectingConflicts: "正在检测冲突",
     conflictsTitle: "冲突检测",
@@ -182,6 +191,13 @@ const flowText = {
     preferenceHistory: "已识别偏好",
     currentCheckpoint: "当前检查点",
     planningSteps: "规划步骤",
+    assumptionValue: "规划假设",
+    assumptionReason: "推断依据",
+    useAssumption: "采用",
+    reviewLater: "待确认",
+    excludeAssumption: "排除",
+    assumptionDecision: "规划处理",
+    assumptionsReadySummary: "可用于生成行程",
     traceTitle: "智能体轨迹"
   }
 } as const;
@@ -267,30 +283,6 @@ function isUsefulCostAssumption(item: CostAssumption) {
   return item.perDayEstimateEur > 0 || item.totalEstimateEur > 0 || !isUnspecifiedText(item.basis);
 }
 
-function assumptionRowTone(status: Assumption["status"]) {
-  if (status === "Rejected") {
-    return "border-rose-100 bg-rose-50/55";
-  }
-
-  if (status === "Accepted" || status === "Edited") {
-    return "border-emerald-100 bg-emerald-50/45";
-  }
-
-  return "border-transparent bg-white";
-}
-
-function assumptionActionTone(active: boolean, tone: "accept" | "reject") {
-  if (tone === "accept") {
-    return active
-      ? "border-emerald-600 bg-emerald-600 text-white shadow-sm"
-      : "border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50";
-  }
-
-  return active
-    ? "border-rose-600 bg-rose-600 text-white shadow-sm"
-    : "border-rose-200 bg-white text-rose-700 hover:bg-rose-50";
-}
-
 function WorkflowSection({
   id,
   title,
@@ -315,7 +307,10 @@ function WorkflowSection({
   const open = activeSection === id;
 
   return (
-    <section className="rounded-[8px] border border-slate-200/80 bg-white/88 shadow-[0_18px_48px_rgba(26,35,67,0.08)] backdrop-blur">
+    <section
+      id={`workflow-${id}`}
+      className="scroll-mt-4 rounded-[8px] border border-slate-200/80 bg-white/88 shadow-[0_18px_48px_rgba(26,35,67,0.08)] backdrop-blur"
+    >
       <button
         type="button"
         onClick={() => onOpen(id)}
@@ -520,6 +515,54 @@ export default function Home() {
     applySession(emptySession(language));
   }
 
+  function openWorkflowSection(section: FlowSection) {
+    setActiveSection(section);
+    window.setTimeout(() => {
+      document.getElementById(`workflow-${section}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+  }
+
+  function clearCurrentPlanningArtifacts() {
+    setDetectedConflicts([]);
+    setProbeAnswers({});
+    setLearnedPreferences([]);
+    setAssumptions([]);
+    setTransportAssumptions([]);
+    setAccommodationAssumptions([]);
+    setCostAssumptions([]);
+    setCritiques([]);
+    setItinerary(null);
+    setWarnings([]);
+    setSelectedOptionId(null);
+    setMemoryStatus(null);
+    setTrace([]);
+    setError(null);
+  }
+
+  function handlePromptChange(nextPrompt: string) {
+    setPrompt(nextPrompt);
+
+    const hasPlanningArtifacts =
+      detectedConflicts.length > 0 ||
+      Object.keys(probeAnswers).length > 0 ||
+      learnedPreferences.length > 0 ||
+      assumptions.length > 0 ||
+      transportAssumptions.length > 0 ||
+      accommodationAssumptions.length > 0 ||
+      costAssumptions.length > 0 ||
+      critiques.length > 0 ||
+      itinerary !== null ||
+      warnings.length > 0 ||
+      trace.length > 0 ||
+      workflowStep !== "prompt";
+
+    if (nextPrompt !== prompt && hasPlanningArtifacts) {
+      clearCurrentPlanningArtifacts();
+      setWorkflowStep("prompt");
+      setActiveSection("prompt");
+    }
+  }
+
   async function handleDetectConflicts() {
     if (prompt.trim().length < 4 || loadingStage !== null) {
       return;
@@ -551,7 +594,7 @@ export default function Home() {
       setMemoryStatus(result.memoryStatus);
       setTrace(result.trace);
       setWorkflowStep("probes");
-      setActiveSection("probes");
+      openWorkflowSection("probes");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : labels.analyzeError);
       setTrace((current) => current.map((entry) => ({ ...entry, status: "Error" })));
@@ -608,7 +651,7 @@ export default function Home() {
         ...result.trace
       ]);
       setWorkflowStep("learned");
-      setActiveSection("learned");
+      openWorkflowSection("learned");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : labels.analyzeError);
       setTrace((current) => current.map((entry) => (entry.agent === "Preference Probe Agent" ? { ...entry, status: "Error" } : entry)));
@@ -657,7 +700,7 @@ export default function Home() {
         ...result.trace
       ]);
       setWorkflowStep("itinerary");
-      setActiveSection("itinerary");
+      openWorkflowSection("itinerary");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : labels.planError);
       setTrace((current) =>
@@ -682,7 +725,7 @@ export default function Home() {
     }
 
     if (!sectionComplete.probes) {
-      setActiveSection("probes");
+      openWorkflowSection("probes");
       return;
     }
 
@@ -691,7 +734,7 @@ export default function Home() {
       return;
     }
 
-    setActiveSection("assumptions");
+    openWorkflowSection("assumptions");
   }
 
   function handleAssumptionStatusChange(id: string, status: Assumption["status"]) {
@@ -732,6 +775,17 @@ export default function Home() {
   const inferredCount = assumptions.filter((assumption) => assumption.status === "Pending").length;
   const currentProbe = detectedConflicts.find((conflict) => !probeAnswers[conflict.id]);
   const visiblePreferenceRows = learnedPreferences.length > 0 ? learnedPreferences : [];
+  const composerPrimaryLabel = loadingStage === "itinerary"
+    ? copy.generatingItinerary
+    : sectionComplete.assumptions
+      ? copy.generateItinerary
+      : !sectionComplete.conflicts
+        ? copy.detectConflicts
+        : !sectionComplete.probes
+          ? copy.probesTitle
+          : !sectionComplete.learned
+            ? copy.learnPreferences
+            : copy.reviewAssumptions;
   const processItems: Array<{ key: FlowSection; title: string; body: string; done: boolean }> = [
     { key: "prompt", title: copy.promptTitle, body: prompt.trim() ? prompt : labels.waitingPrompt, done: sectionComplete.prompt },
     {
@@ -790,11 +844,11 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="mx-auto flex rounded-full border border-slate-200 bg-white/92 p-1 shadow-[0_16px_44px_rgba(26,35,67,0.1)] backdrop-blur">
+        <div className="mx-auto flex max-w-full rounded-full border border-slate-200 bg-white/92 p-1 shadow-[0_16px_44px_rgba(26,35,67,0.1)] backdrop-blur">
           <button
             type="button"
-            onClick={() => setActiveSection("assumptions")}
-            className={`flex h-10 items-center gap-2 rounded-full px-4 text-sm font-black transition ${
+            onClick={() => openWorkflowSection("assumptions")}
+            className={`flex h-10 min-w-[150px] items-center justify-center gap-2 whitespace-nowrap rounded-full px-4 text-sm font-black transition ${
               activeSection === "assumptions" || activeSection === "probes"
                 ? "bg-violet-600 text-white shadow-sm"
                 : "text-slate-600 hover:bg-slate-50"
@@ -805,8 +859,8 @@ export default function Home() {
           </button>
           <button
             type="button"
-            onClick={() => setActiveSection("itinerary")}
-            className={`flex h-10 items-center gap-2 rounded-full px-4 text-sm font-black transition ${
+            onClick={() => openWorkflowSection("itinerary")}
+            className={`flex h-10 min-w-[130px] items-center justify-center gap-2 whitespace-nowrap rounded-full px-4 text-sm font-black transition ${
               activeSection === "itinerary" ? "bg-violet-600 text-white shadow-sm" : "text-slate-600 hover:bg-slate-50"
             }`}
           >
@@ -924,7 +978,7 @@ export default function Home() {
                 <p className="mt-2 text-xs font-semibold leading-5 text-orange-900/75">{currentProbe.hiddenPreference}</p>
                 <button
                   type="button"
-                  onClick={() => setActiveSection("probes")}
+                  onClick={() => openWorkflowSection("probes")}
                   className="mt-3 rounded-[8px] bg-violet-600 px-3 py-2 text-xs font-black text-white"
                 >
                   {copy.probesTitle}
@@ -934,11 +988,11 @@ export default function Home() {
               <div className="rounded-[8px] border border-indigo-100 bg-indigo-50/70 p-3">
                 <p className="text-sm font-black text-indigo-950">{copy.assumptionsTitle}</p>
                 <p className="mt-2 text-xs font-semibold leading-5 text-indigo-900/75">
-                  {acceptedCount} {labels.confirmed} - {rejectedCount} {labels.missing}
+                  {acceptedCount} {labels.confirmed} / {inferredCount} {copy.reviewLater} / {rejectedCount} {copy.excludeAssumption}
                 </p>
                 <button
                   type="button"
-                  onClick={() => setActiveSection("assumptions")}
+                  onClick={() => openWorkflowSection("assumptions")}
                   className="mt-3 rounded-[8px] bg-violet-600 px-3 py-2 text-xs font-black text-white"
                 >
                   {copy.reviewAssumptions}
@@ -955,7 +1009,7 @@ export default function Home() {
                 <button
                   key={item.key}
                   type="button"
-                  onClick={() => setActiveSection(item.key)}
+                  onClick={() => openWorkflowSection(item.key)}
                   className="flex min-w-0 flex-col items-center gap-1"
                   title={item.title}
                 >
@@ -1006,7 +1060,7 @@ export default function Home() {
             status={sectionStatus("prompt", workflowStep, activeSection, sectionComplete.prompt)}
             statusLabel={statusLabel("prompt")}
             activeSection={activeSection}
-            onOpen={setActiveSection}
+            onOpen={openWorkflowSection}
           >
             <div className="space-y-3">
               <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
@@ -1036,7 +1090,7 @@ export default function Home() {
             status={sectionStatus("conflicts", workflowStep, activeSection, sectionComplete.conflicts)}
             statusLabel={statusLabel("conflicts")}
             activeSection={activeSection}
-            onOpen={setActiveSection}
+            onOpen={openWorkflowSection}
           >
             {detectedConflicts.length === 0 ? (
               <EmptyState title={copy.noConflicts} />
@@ -1068,7 +1122,7 @@ export default function Home() {
             status={sectionStatus("probes", workflowStep, activeSection, sectionComplete.probes)}
             statusLabel={statusLabel("probes")}
             activeSection={activeSection}
-            onOpen={setActiveSection}
+            onOpen={openWorkflowSection}
           >
             {detectedConflicts.length === 0 ? (
               <EmptyState title={copy.noConflicts} />
@@ -1152,7 +1206,7 @@ export default function Home() {
             status={sectionStatus("learned", workflowStep, activeSection, sectionComplete.learned)}
             statusLabel={statusLabel("learned")}
             activeSection={activeSection}
-            onOpen={setActiveSection}
+            onOpen={openWorkflowSection}
           >
             {learnedPreferences.length === 0 ? (
               <EmptyState title={copy.noLearned} />
@@ -1171,7 +1225,7 @@ export default function Home() {
                   type="button"
                   onClick={() => {
                     setWorkflowStep("assumptions");
-                    setActiveSection("assumptions");
+                    openWorkflowSection("assumptions");
                   }}
                   className="rounded-[8px] border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700"
                 >
@@ -1189,77 +1243,133 @@ export default function Home() {
             status={sectionStatus("assumptions", workflowStep, activeSection, sectionComplete.assumptions)}
             statusLabel={statusLabel("assumptions")}
             activeSection={activeSection}
-            onOpen={setActiveSection}
+            onOpen={openWorkflowSection}
           >
             {assumptions.length === 0 ? (
               <EmptyState title={copy.noAssumptions} />
             ) : (
-              <div className="space-y-3">
-                <p className="text-xs font-semibold leading-5 text-slate-500">{copy.assumptionHint}</p>
-                <div className="divide-y divide-slate-100 rounded-[8px] border border-slate-200 bg-white">
+              <div className="space-y-4">
+                <div className="grid gap-2 md:grid-cols-3">
+                  <div className="rounded-[8px] border border-emerald-100 bg-emerald-50 p-3">
+                    <p className="text-[11px] font-black uppercase text-emerald-700">{labels.confirmed}</p>
+                    <p className="mt-1 text-2xl font-black text-emerald-950">{acceptedCount}</p>
+                  </div>
+                  <div className="rounded-[8px] border border-amber-100 bg-amber-50 p-3">
+                    <p className="text-[11px] font-black uppercase text-amber-700">{copy.reviewLater}</p>
+                    <p className="mt-1 text-2xl font-black text-amber-950">{inferredCount}</p>
+                  </div>
+                  <div className="rounded-[8px] border border-rose-100 bg-rose-50 p-3">
+                    <p className="text-[11px] font-black uppercase text-rose-700">{copy.excludeAssumption}</p>
+                    <p className="mt-1 text-2xl font-black text-rose-950">{rejectedCount}</p>
+                  </div>
+                </div>
+
+                <div className="rounded-[8px] border border-indigo-100 bg-indigo-50/70 p-3">
+                  <p className="text-sm font-black text-indigo-950">
+                    {acceptedCount + inferredCount} {copy.assumptionsReadySummary}
+                  </p>
+                  <p className="mt-1 text-xs font-semibold leading-5 text-indigo-900/70">{copy.assumptionHint}</p>
+                </div>
+
+                <div className="grid gap-3">
                   {assumptions.map((assumption) => {
                     const isAccepted = assumption.status === "Accepted" || assumption.status === "Edited";
                     const isRejected = assumption.status === "Rejected";
+                    const isPending = assumption.status === "Pending";
 
                     return (
-                      <div
+                      <article
                         key={assumption.id}
-                        className={`grid gap-3 p-3 transition md:grid-cols-[minmax(0,1fr)_auto] ${assumptionRowTone(
-                          assumption.status
-                        )}`}
+                        className={`rounded-[8px] border bg-white p-4 shadow-sm transition ${
+                          isRejected
+                            ? "border-rose-200 bg-rose-50/45"
+                            : isAccepted
+                              ? "border-emerald-200 bg-emerald-50/35"
+                              : "border-slate-200"
+                        }`}
                       >
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="text-sm font-black text-slate-950">{labels.categoryLabels[assumption.category]}</p>
-                            <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-bold text-slate-500">
-                              {Math.round(assumption.confidence * 100)}% {copy.confidence}
-                            </span>
-                            <span
-                              className={`rounded-full border px-2 py-0.5 text-[11px] font-bold ${
-                                isRejected
-                                  ? "border-rose-200 bg-rose-50 text-rose-700"
-                                  : isAccepted
-                                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                                    : "border-slate-200 bg-slate-50 text-slate-500"
-                              }`}
-                            >
-                              {labels.assumptionStatusLabels[assumption.status]}
-                            </span>
+                        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-sm font-black text-slate-950">{labels.categoryLabels[assumption.category]}</p>
+                              <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-bold text-slate-500">
+                                {Math.round(assumption.confidence * 100)}% {copy.confidence}
+                              </span>
+                              <span
+                                className={`rounded-full border px-2 py-0.5 text-[11px] font-bold ${
+                                  isRejected
+                                    ? "border-rose-200 bg-white text-rose-700"
+                                    : isAccepted
+                                      ? "border-emerald-200 bg-white text-emerald-700"
+                                      : "border-amber-200 bg-white text-amber-700"
+                                }`}
+                              >
+                                {labels.assumptionStatusLabels[assumption.status]}
+                              </span>
+                            </div>
+
+                            <label className="mt-4 block">
+                              <span className="text-[11px] font-black uppercase text-slate-400">{copy.assumptionValue}</span>
+                              <textarea
+                                value={assumption.value}
+                                onChange={(event) => handleAssumptionValueChange(assumption.id, event.target.value)}
+                                rows={2}
+                                className="mt-1 min-h-20 w-full resize-y rounded-[8px] border border-slate-200 bg-white px-3 py-2 text-sm font-semibold leading-6 text-slate-900 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100"
+                              />
+                            </label>
+
+                            <div className="mt-3 rounded-[8px] border border-slate-100 bg-white/75 p-3">
+                              <p className="text-[11px] font-black uppercase text-slate-400">{copy.assumptionReason}</p>
+                              <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">{assumption.rationale}</p>
+                            </div>
                           </div>
-                          <input
-                            value={assumption.value}
-                            onChange={(event) => handleAssumptionValueChange(assumption.id, event.target.value)}
-                            className="mt-2 h-9 w-full rounded-[8px] border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-900 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100"
-                          />
-                          <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">{assumption.rationale}</p>
+
+                          <div className="rounded-[8px] border border-slate-200 bg-white p-3">
+                            <p className="text-[11px] font-black uppercase text-slate-400">{copy.assumptionDecision}</p>
+                            <div className="mt-3 grid gap-2" role="group" aria-label={copy.reviewAssumptions}>
+                              <button
+                                type="button"
+                                aria-pressed={isAccepted}
+                                onClick={() => handleAssumptionStatusChange(assumption.id, "Accepted")}
+                                className={`flex h-10 items-center justify-between rounded-[8px] border px-3 text-sm font-black transition ${
+                                  isAccepted
+                                    ? "border-emerald-500 bg-emerald-600 text-white shadow-sm"
+                                    : "border-slate-200 bg-white text-slate-600 hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700"
+                                }`}
+                              >
+                                <span>{copy.useAssumption}</span>
+                                {isAccepted ? <Check className="size-4" /> : null}
+                              </button>
+                              <button
+                                type="button"
+                                aria-pressed={isPending}
+                                onClick={() => handleAssumptionStatusChange(assumption.id, "Pending")}
+                                className={`flex h-10 items-center justify-between rounded-[8px] border px-3 text-sm font-black transition ${
+                                  isPending
+                                    ? "border-amber-400 bg-amber-100 text-amber-800"
+                                    : "border-slate-200 bg-white text-slate-600 hover:border-amber-200 hover:bg-amber-50 hover:text-amber-700"
+                                }`}
+                              >
+                                <span>{copy.reviewLater}</span>
+                                {isPending ? <AlertTriangle className="size-4" /> : null}
+                              </button>
+                              <button
+                                type="button"
+                                aria-pressed={isRejected}
+                                onClick={() => handleAssumptionStatusChange(assumption.id, "Rejected")}
+                                className={`flex h-10 items-center justify-between rounded-[8px] border px-3 text-sm font-black transition ${
+                                  isRejected
+                                    ? "border-rose-500 bg-rose-600 text-white shadow-sm"
+                                    : "border-slate-200 bg-white text-slate-600 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                                }`}
+                              >
+                                <span>{copy.excludeAssumption}</span>
+                                {isRejected ? <X className="size-4" /> : null}
+                              </button>
+                            </div>
+                          </div>
                         </div>
-                        <div className="flex items-start gap-2 md:justify-end" role="group" aria-label={copy.reviewAssumptions}>
-                          <button
-                            type="button"
-                            aria-pressed={isAccepted}
-                            onClick={() => handleAssumptionStatusChange(assumption.id, "Accepted")}
-                            className={`flex h-10 items-center gap-2 rounded-[8px] border px-3 text-xs font-bold transition ${assumptionActionTone(
-                              isAccepted,
-                              "accept"
-                            )}`}
-                          >
-                            <Check className="size-3.5" />
-                            {labels.confirmAssumption}
-                          </button>
-                          <button
-                            type="button"
-                            aria-pressed={isRejected}
-                            onClick={() => handleAssumptionStatusChange(assumption.id, "Rejected")}
-                            className={`flex h-10 items-center gap-2 rounded-[8px] border px-3 text-xs font-bold transition ${assumptionActionTone(
-                              isRejected,
-                              "reject"
-                            )}`}
-                          >
-                            <X className="size-3.5" />
-                            {labels.rejectAssumption}
-                          </button>
-                        </div>
-                      </div>
+                      </article>
                     );
                   })}
                 </div>
@@ -1335,7 +1445,7 @@ export default function Home() {
               status={sectionStatus("itinerary", workflowStep, activeSection, sectionComplete.itinerary)}
               statusLabel={statusLabel("itinerary")}
               activeSection={activeSection}
-              onOpen={setActiveSection}
+              onOpen={openWorkflowSection}
             >
               <EmptyState title={copy.noItinerary} />
             </WorkflowSection>
@@ -1349,7 +1459,7 @@ export default function Home() {
             status={sectionStatus("feasibility", workflowStep, activeSection, sectionComplete.feasibility)}
             statusLabel={statusLabel("feasibility")}
             activeSection={activeSection}
-            onOpen={setActiveSection}
+            onOpen={openWorkflowSection}
           >
             {warnings.length === 0 ? (
               <EmptyState title={copy.noWarnings} />
@@ -1408,7 +1518,7 @@ export default function Home() {
                   <button
                     key={item.key}
                     type="button"
-                    onClick={() => setActiveSection(item.key)}
+                    onClick={() => openWorkflowSection(item.key)}
                     className="grid w-full grid-cols-[30px_minmax(0,1fr)_24px] gap-3 text-left"
                   >
                     <div className="relative flex justify-center">
@@ -1456,7 +1566,7 @@ export default function Home() {
 
       <PromptComposer
         prompt={prompt}
-        onPromptChange={setPrompt}
+        onPromptChange={handlePromptChange}
         onAnalyze={handleDetectConflicts}
         onGenerate={handleComposerGenerate}
         analyzing={loadingStage !== null && loadingStage !== "itinerary"}
@@ -1465,8 +1575,9 @@ export default function Home() {
         stats={promptStats}
         labels={{
           promptPlaceholder: copy.promptPlaceholder,
+          promptTooShort: copy.promptTooShort,
           analyze: copy.detectConflicts,
-          generate: copy.generateItinerary,
+          generate: composerPrimaryLabel,
           assumptionsInferred: labels.assumptionsInferred,
           missingPreferences: labels.missingPreferences,
           highImpactUnresolved: labels.highImpactUnresolved,

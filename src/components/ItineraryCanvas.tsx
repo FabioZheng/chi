@@ -1,19 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Bed,
   Bus,
   CalendarDays,
-  Crosshair,
   Euro,
   Footprints,
   Layers,
   MapPin,
-  Minus,
   Navigation2,
-  Plus,
   Route,
   ShieldCheck,
   Sparkles,
@@ -65,22 +62,10 @@ type MapAdjustment = {
   offsetY: number;
 };
 
-type MapDrag = {
-  pointerId: number;
-  startX: number;
-  startY: number;
-  offsetX: number;
-  offsetY: number;
-};
-
-type Tile = {
-  key: string;
-  x: number;
-  y: number;
-  tileX: number;
-  tileY: number;
-  zoom: number;
-};
+type LeafletModule = typeof import("leaflet");
+type LeafletMapInstance = import("leaflet").Map;
+type LeafletLayerGroup = import("leaflet").LayerGroup;
+type LeafletImport = LeafletModule & { default?: LeafletModule };
 
 const MAP_WIDTH = 1000;
 const MAP_HEIGHT = 600;
@@ -158,14 +143,58 @@ function derivePlaces(option: ItineraryOption): MapPlace[] {
   );
 }
 
+function routeSegmentLooseKey(segment: RouteSegment) {
+  return [
+    segment.fromPlaceId,
+    segment.toPlaceId,
+    segment.transportMode.toLowerCase(),
+    Math.round(segment.estimatedTravelTimeMinutes),
+    segment.distanceKm.toFixed(2),
+    segment.notes.toLowerCase()
+  ].join("|");
+}
+
+function dedupeRouteSegments(segments: RouteSegment[]) {
+  const exactKeys = new Set<string>();
+  const looseKeys = new Set<string>();
+  const deduped: RouteSegment[] = [];
+
+  segments.forEach((segment) => {
+    const looseKey = routeSegmentLooseKey(segment);
+    const exactKey = `${segment.dayNumber ?? "all"}|${looseKey}`;
+
+    if (exactKeys.has(exactKey)) {
+      return;
+    }
+
+    if (segment.dayNumber === null && looseKeys.has(looseKey)) {
+      return;
+    }
+
+    exactKeys.add(exactKey);
+    looseKeys.add(looseKey);
+    deduped.push(segment);
+  });
+
+  return deduped;
+}
+
 function routeSegmentsForView(option: ItineraryOption, view: MapView) {
-  const segments = [...option.routeSegments, ...option.days.flatMap((day) => day.routeSegments)];
+  const daySegments = option.days.flatMap((day) =>
+    day.routeSegments.map((segment) => ({
+      ...segment,
+      dayNumber: day.dayNumber
+    }))
+  );
 
   if (view === "all") {
-    return segments;
+    return dedupeRouteSegments([...daySegments, ...option.routeSegments]);
   }
 
-  return segments.filter((segment) => segment.dayNumber === null || segment.dayNumber === view);
+  return dedupeRouteSegments([
+    ...daySegments.filter((segment) => segment.dayNumber === view),
+    ...option.routeSegments.filter((segment) => segment.dayNumber === view)
+  ]);
 }
 
 function dayColor(dayNumber: number | null | undefined) {
@@ -268,59 +297,6 @@ function projectPlaces(
     });
 }
 
-function visibleTiles(camera: MapCamera, adjustment: MapAdjustment): Tile[] {
-  const zoom = clamp(camera.zoom + adjustment.zoomDelta, MIN_ZOOM, MAX_ZOOM);
-  const center = coordinatesToWorld({ lat: camera.centerLat, lng: camera.centerLng }, zoom);
-  const topLeft = {
-    x: center.x - MAP_WIDTH / 2 - adjustment.offsetX,
-    y: center.y - MAP_HEIGHT / 2 - adjustment.offsetY
-  };
-  const tileCount = 2 ** zoom;
-  const startX = Math.floor(topLeft.x / MAP_TILE_SIZE) - 1;
-  const endX = Math.floor((topLeft.x + MAP_WIDTH) / MAP_TILE_SIZE) + 1;
-  const startY = Math.max(0, Math.floor(topLeft.y / MAP_TILE_SIZE) - 1);
-  const endY = Math.min(tileCount - 1, Math.floor((topLeft.y + MAP_HEIGHT) / MAP_TILE_SIZE) + 1);
-  const tiles: Tile[] = [];
-
-  for (let tileX = startX; tileX <= endX; tileX += 1) {
-    for (let tileY = startY; tileY <= endY; tileY += 1) {
-      const wrappedX = ((tileX % tileCount) + tileCount) % tileCount;
-
-      tiles.push({
-        key: `${zoom}-${tileX}-${tileY}`,
-        x: tileX * MAP_TILE_SIZE - topLeft.x,
-        y: tileY * MAP_TILE_SIZE - topLeft.y,
-        tileX: wrappedX,
-        tileY,
-        zoom
-      });
-    }
-  }
-
-  return tiles;
-}
-
-function tileUrl(tile: Tile) {
-  return `https://a.basemaps.cartocdn.com/rastertiles/voyager/${tile.zoom}/${tile.tileX}/${tile.tileY}.png`;
-}
-
-function routePath(from: PositionedPlace, to: PositionedPlace, index: number) {
-  const midX = (from.x + to.x) / 2;
-  const midY = (from.y + to.y) / 2;
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const distance = Math.max(1, Math.hypot(dx, dy));
-  const bend = index % 2 === 0 ? 0.12 : -0.12;
-  const controlX = midX - dy * bend;
-  const controlY = midY + dx * bend;
-
-  if (distance < 12) {
-    return `M ${from.x} ${from.y} L ${to.x} ${to.y}`;
-  }
-
-  return `M ${from.x} ${from.y} Q ${controlX} ${controlY} ${to.x} ${to.y}`;
-}
-
 function buildPositionedLookup(places: PositionedPlace[]) {
   const lookup = new Map<string, PositionedPlace>();
 
@@ -347,95 +323,197 @@ function fallbackRouteSegments(places: PositionedPlace[], labels: UIText): Route
   }));
 }
 
-function LiveBaseMap({
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function normalizeLeafletModule(module: LeafletImport): LeafletModule {
+  return module.default ?? module;
+}
+
+function LeafletRouteMap({
   labels,
+  places,
+  routeSegments,
+  selectedPlaceId,
+  onSelectPlace,
+  viewLabel,
   planning = false,
   overlayTitle,
-  overlayBody,
-  camera = { centerLat: 20, centerLng: 0, zoom: 2 }
+  overlayBody
 }: {
   labels: UIText;
+  places: Array<MapPlace & { sequence: number }>;
+  routeSegments: RouteSegment[];
+  selectedPlaceId?: string | null;
+  onSelectPlace?: (id: string) => void;
+  viewLabel: string;
   planning?: boolean;
   overlayTitle?: string;
   overlayBody?: string;
-  camera?: MapCamera;
 }) {
-  const [adjustment, setAdjustment] = useState<MapAdjustment>({ zoomDelta: 0, offsetX: 0, offsetY: 0 });
-  const [drag, setDrag] = useState<MapDrag | null>(null);
-  const tiles = visibleTiles(camera, adjustment);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<LeafletMapInstance | null>(null);
+  const leafletRef = useRef<LeafletModule | null>(null);
+  const markerLayerRef = useRef<LeafletLayerGroup | null>(null);
+  const routeLayerRef = useRef<LeafletLayerGroup | null>(null);
+  const [mapReady, setMapReady] = useState(0);
+  const availablePlaces = useMemo(() => places.filter((place) => place.coordinates), [places]);
+  const placesKey = places
+    .map((place) => `${place.id}:${place.coordinates?.lat ?? "x"}:${place.coordinates?.lng ?? "x"}:${place.dayNumber ?? "all"}`)
+    .join("|");
+  const routeKey = routeSegments
+    .map((segment) => `${segment.id}:${segment.fromPlaceId}:${segment.toPlaceId}:${segment.dayNumber ?? "all"}`)
+    .join("|");
 
-  function changeZoom(delta: number) {
-    setAdjustment((current) => ({
-      ...current,
-      zoomDelta: clamp(current.zoomDelta + delta, MIN_ZOOM - camera.zoom, MAX_ZOOM - camera.zoom)
-    }));
-  }
+  useEffect(() => {
+    let cancelled = false;
 
-  function resetMap() {
-    setAdjustment({ zoomDelta: 0, offsetX: 0, offsetY: 0 });
-  }
+    async function createMap() {
+      const leaflet = normalizeLeafletModule(await import("leaflet"));
+
+      if (cancelled || !containerRef.current || mapRef.current) {
+        return;
+      }
+
+      leafletRef.current = leaflet;
+      const map = leaflet.map(containerRef.current, {
+        attributionControl: false,
+        preferCanvas: true,
+        scrollWheelZoom: true,
+        zoomControl: false
+      });
+
+      leaflet
+        .tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png", {
+          attribution: labels.mapDataAttribution,
+          maxZoom: 19,
+          subdomains: "abcd"
+        })
+        .addTo(map);
+      leaflet.control.zoom({ position: "topright" }).addTo(map);
+      leaflet.control.attribution({ position: "bottomright", prefix: false }).addTo(map);
+
+      markerLayerRef.current = leaflet.layerGroup().addTo(map);
+      routeLayerRef.current = leaflet.layerGroup().addTo(map);
+      mapRef.current = map;
+      map.setView([20, 0], 2);
+      setMapReady((current) => current + 1);
+
+      window.setTimeout(() => map.invalidateSize(), 80);
+    }
+
+    void createMap();
+
+    return () => {
+      cancelled = true;
+
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+        markerLayerRef.current = null;
+        routeLayerRef.current = null;
+      }
+    };
+  }, [labels.mapDataAttribution]);
+
+  useEffect(() => {
+    const leaflet = leafletRef.current;
+    const map = mapRef.current;
+    const markerLayer = markerLayerRef.current;
+    const routeLayer = routeLayerRef.current;
+
+    if (!leaflet || !map || !markerLayer || !routeLayer || mapReady === 0) {
+      return;
+    }
+
+    markerLayer.clearLayers();
+    routeLayer.clearLayers();
+
+    const placeLookup = new Map<string, MapPlace & { sequence: number }>();
+
+    availablePlaces.forEach((place) => {
+      placeLookup.set(place.id, place);
+      if (place.sourceActivityId) {
+        placeLookup.set(place.sourceActivityId, place);
+      }
+    });
+
+    routeSegments.forEach((segment) => {
+      const from = placeLookup.get(segment.fromPlaceId);
+      const to = placeLookup.get(segment.toPlaceId);
+
+      if (!from?.coordinates || !to?.coordinates) {
+        return;
+      }
+
+      leaflet
+        .polyline(
+          [
+            [from.coordinates.lat, from.coordinates.lng],
+            [to.coordinates.lat, to.coordinates.lng]
+          ],
+          {
+            color: dayColor(segment.dayNumber ?? from.dayNumber),
+            dashArray: segment.distanceKm === 0 ? "8 8" : undefined,
+            opacity: 0.86,
+            weight: 5
+          }
+        )
+        .addTo(routeLayer);
+    });
+
+    availablePlaces.forEach((place) => {
+      if (!place.coordinates) {
+        return;
+      }
+
+      const selected = selectedPlaceId === place.id;
+      const color = dayColor(place.dayNumber);
+      const icon = leaflet.divIcon({
+        className: "itinerary-leaflet-marker-shell",
+        html: `<div class="itinerary-leaflet-marker ${selected ? "is-selected" : ""}" style="--marker-color:${color}" title="${escapeHtml(
+          place.title
+        )}">${place.sequence + 1}</div>`,
+        iconAnchor: [18, 18],
+        iconSize: [36, 36]
+      });
+
+      leaflet
+        .marker([place.coordinates.lat, place.coordinates.lng], {
+          icon,
+          title: `${place.title} - ${place.location}`
+        })
+        .on("click", () => onSelectPlace?.(place.id))
+        .addTo(markerLayer);
+    });
+
+    if (availablePlaces.length === 0) {
+      map.setView([20, 0], 2);
+    } else if (availablePlaces.length === 1) {
+      const coordinates = availablePlaces[0].coordinates!;
+      map.setView([coordinates.lat, coordinates.lng], 13);
+    } else {
+      const bounds = leaflet.latLngBounds(
+        availablePlaces.map((place) => [place.coordinates!.lat, place.coordinates!.lng] as [number, number])
+      );
+      map.fitBounds(bounds, { maxZoom: 13, padding: [56, 56] });
+    }
+
+    window.setTimeout(() => map.invalidateSize(), 40);
+  }, [availablePlaces, mapReady, onSelectPlace, placesKey, routeKey, routeSegments, selectedPlaceId]);
 
   return (
-    <div
-      className="relative h-[520px] min-h-[420px] touch-none overflow-hidden bg-[#eef2ed] lg:h-[620px]"
-      onPointerDown={(event) => {
-        event.currentTarget.setPointerCapture(event.pointerId);
-        setDrag({
-          pointerId: event.pointerId,
-          startX: event.clientX,
-          startY: event.clientY,
-          offsetX: adjustment.offsetX,
-          offsetY: adjustment.offsetY
-        });
-      }}
-      onPointerMove={(event) => {
-        if (!drag || drag.pointerId !== event.pointerId) {
-          return;
-        }
-
-        setAdjustment((current) => ({
-          ...current,
-          offsetX: drag.offsetX + event.clientX - drag.startX,
-          offsetY: drag.offsetY + event.clientY - drag.startY
-        }));
-      }}
-      onPointerUp={() => setDrag(null)}
-      onPointerCancel={() => setDrag(null)}
-      onWheel={(event) => {
-        event.preventDefault();
-        changeZoom(event.deltaY > 0 ? -1 : 1);
-      }}
-    >
-      <svg
-        viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`}
-        preserveAspectRatio="none"
-        className="absolute inset-0 h-full w-full select-none"
-        aria-label={labels.mapTitle}
-      >
-        <defs>
-          <pattern id="live-base-map-roads" width="92" height="92" patternUnits="userSpaceOnUse">
-            <rect width="92" height="92" fill="#eef2ed" />
-            <path d="M -12 72 C 20 48 48 48 104 12" fill="none" stroke="#d1d8ce" strokeWidth="7" />
-            <path d="M -12 72 C 20 48 48 48 104 12" fill="none" stroke="#ffffff" strokeWidth="4" />
-            <path d="M 18 -10 C 38 30 44 56 98 102" fill="none" stroke="#d8ded5" strokeWidth="5" />
-          </pattern>
-        </defs>
-        <rect width={MAP_WIDTH} height={MAP_HEIGHT} fill="url(#live-base-map-roads)" />
-        {tiles.map((tile) => (
-          <image
-            key={tile.key}
-            href={tileUrl(tile)}
-            x={tile.x}
-            y={tile.y}
-            width={MAP_TILE_SIZE}
-            height={MAP_TILE_SIZE}
-            opacity="0.98"
-          />
-        ))}
-      </svg>
+    <div className="relative h-[520px] min-h-[420px] overflow-hidden bg-[#d9ecf2] lg:h-[620px]">
+      <div ref={containerRef} className="leaflet-itinerary-map absolute inset-0" aria-label={labels.mapTitle} />
 
       {overlayTitle ? (
-        <div className="pointer-events-none absolute left-1/2 top-1/2 z-20 w-[min(420px,calc(100%-48px))] -translate-x-1/2 -translate-y-1/2 rounded-[8px] border border-slate-200 bg-white/94 p-5 text-center shadow-[0_22px_70px_rgba(26,35,67,0.18)] backdrop-blur">
+        <div className="pointer-events-none absolute left-1/2 top-1/2 z-[450] w-[min(420px,calc(100%-48px))] -translate-x-1/2 -translate-y-1/2 rounded-[8px] border border-slate-200 bg-white/94 p-5 text-center shadow-[0_22px_70px_rgba(26,35,67,0.18)] backdrop-blur">
           <div className="mx-auto flex size-14 items-center justify-center rounded-full bg-gradient-to-br from-indigo-100 to-violet-100 text-indigo-600">
             {planning ? <Timer className="size-7" /> : <Sparkles className="size-7" />}
           </div>
@@ -444,50 +522,42 @@ function LiveBaseMap({
         </div>
       ) : null}
 
-      <div className="absolute left-4 top-4 z-20 rounded-[8px] border border-slate-200 bg-white/94 px-3 py-2 text-xs font-black text-slate-700 shadow-sm backdrop-blur">
+      <div className="absolute left-4 top-4 z-[450] rounded-[8px] border border-slate-200 bg-white/94 px-3 py-2 text-xs font-black text-slate-700 shadow-sm backdrop-blur">
         <span className="inline-flex items-center gap-2">
           <Navigation2 className="size-4 text-indigo-600" />
-          {labels.fullTrip}
+          {viewLabel}
         </span>
       </div>
 
-      <div
-        className="absolute right-4 top-4 z-20 overflow-hidden rounded-[8px] border border-slate-200 bg-white shadow-sm"
-        onPointerDown={(event) => event.stopPropagation()}
-      >
-        <button
-          type="button"
-          onClick={() => changeZoom(1)}
-          className="flex size-10 items-center justify-center border-b border-slate-200 text-slate-700 hover:bg-slate-50"
-          title={labels.zoomIn}
-        >
-          <Plus className="size-5" />
-        </button>
-        <button
-          type="button"
-          onClick={() => changeZoom(-1)}
-          className="flex size-10 items-center justify-center border-b border-slate-200 text-slate-700 hover:bg-slate-50"
-          title={labels.zoomOut}
-        >
-          <Minus className="size-5" />
-        </button>
-        <button
-          type="button"
-          onClick={resetMap}
-          className="flex size-10 items-center justify-center text-slate-700 hover:bg-slate-50"
-          title={labels.resetMap}
-        >
-          <Crosshair className="size-5" />
-        </button>
-      </div>
-
-      <div className="absolute bottom-4 left-4 z-20 rounded-[8px] border border-slate-200 bg-white/92 px-3 py-2 text-[11px] font-bold text-slate-500 shadow-sm backdrop-blur">
+      <div className="absolute bottom-4 left-4 z-[450] rounded-[8px] border border-slate-200 bg-white/92 px-3 py-2 text-[11px] font-bold text-slate-500 shadow-sm backdrop-blur">
         {labels.dragToPan} - {labels.wheelToZoom}
       </div>
-      <div className="absolute bottom-4 right-4 z-20 rounded-[8px] border border-slate-200 bg-white/92 px-3 py-2 text-[10px] font-bold text-slate-400 shadow-sm backdrop-blur">
-        {labels.mapDataAttribution}
-      </div>
     </div>
+  );
+}
+
+function LiveBaseMap({
+  labels,
+  planning = false,
+  overlayTitle,
+  overlayBody
+}: {
+  labels: UIText;
+  planning?: boolean;
+  overlayTitle?: string;
+  overlayBody?: string;
+}) {
+  return (
+    <LeafletRouteMap
+      labels={labels}
+      places={[]}
+      routeSegments={[]}
+      selectedPlaceId={null}
+      viewLabel={labels.fullTrip}
+      planning={planning}
+      overlayTitle={overlayTitle}
+      overlayBody={overlayBody}
+    />
   );
 }
 
@@ -971,8 +1041,6 @@ function ItineraryMap({
   labels: UIText;
 }) {
   const [view, setView] = useState<MapView>("all");
-  const [adjustment, setAdjustment] = useState<MapAdjustment>({ zoomDelta: 0, offsetX: 0, offsetY: 0 });
-  const [drag, setDrag] = useState<MapDrag | null>(null);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
   const dayNumbers = selectedOption.days.map((day) => day.dayNumber);
   const places = useMemo(
@@ -982,7 +1050,7 @@ function ItineraryMap({
   const viewPlaces = places.filter((place) => view === "all" || place.dayNumber === view);
   const viewPlacesKey = viewPlaces.map((place) => place.id).join("|");
   const baseCamera = useMemo(() => fitCamera(viewPlaces), [viewPlacesKey]);
-  const positionedPlaces = projectPlaces(viewPlaces, baseCamera, adjustment);
+  const positionedPlaces = projectPlaces(viewPlaces, baseCamera, { zoomDelta: 0, offsetX: 0, offsetY: 0 });
   const unavailablePlaces = viewPlaces.filter((place) => !place.coordinates);
   const positionedById = buildPositionedLookup(positionedPlaces);
   const structuredSegments = routeSegmentsForView(selectedOption, view).filter(
@@ -990,7 +1058,6 @@ function ItineraryMap({
   );
   const routeSegments = structuredSegments.length > 0 ? structuredSegments : fallbackRouteSegments(positionedPlaces, labels);
   const activeDays = selectedOption.days.filter((day) => view === "all" || day.dayNumber === view);
-  const tiles = visibleTiles(baseCamera, adjustment);
   const selectedPlace = positionedPlaces.find((place) => place.id === selectedPlaceId) || positionedPlaces[0] || null;
   const totalWalkingKm = activeDays.reduce((sum, day) => sum + day.totalWalkingKm, 0);
   const totalTravelMinutes =
@@ -1000,7 +1067,6 @@ function ItineraryMap({
   const relevantWarnings = warnings.filter((warning) => view === "all" || !warning.affectedDay || warning.affectedDay === view);
 
   useEffect(() => {
-    setAdjustment({ zoomDelta: 0, offsetX: 0, offsetY: 0 });
     setSelectedPlaceId(null);
   }, [selectedOption.id, view]);
 
@@ -1013,17 +1079,6 @@ function ItineraryMap({
       return viewPlaces.find((place) => place.coordinates)?.id || null;
     });
   }, [viewPlacesKey]);
-
-  function changeZoom(delta: number) {
-    setAdjustment((current) => ({
-      ...current,
-      zoomDelta: clamp(current.zoomDelta + delta, MIN_ZOOM - baseCamera.zoom, MAX_ZOOM - baseCamera.zoom)
-    }));
-  }
-
-  function resetMap() {
-    setAdjustment({ zoomDelta: 0, offsetX: 0, offsetY: 0 });
-  }
 
   return (
     <section className="overflow-hidden rounded-[8px] border border-slate-200 bg-white shadow-[0_22px_70px_rgba(26,35,67,0.1)]">
@@ -1092,201 +1147,16 @@ function ItineraryMap({
             ))}
           </div>
 
-          {positionedPlaces.length === 0 ? (
-            <LiveBaseMap
-              labels={labels}
-              overlayTitle={labels.locationsUnavailableTitle}
-              overlayBody={labels.locationsUnavailableBody}
-              camera={baseCamera}
-            />
-          ) : (
-            <div
-              className="relative h-[520px] min-h-[420px] touch-none overflow-hidden bg-[#eef2ed] lg:h-[620px]"
-              onPointerDown={(event) => {
-                event.currentTarget.setPointerCapture(event.pointerId);
-                setDrag({
-                  pointerId: event.pointerId,
-                  startX: event.clientX,
-                  startY: event.clientY,
-                  offsetX: adjustment.offsetX,
-                  offsetY: adjustment.offsetY
-                });
-              }}
-              onPointerMove={(event) => {
-                if (!drag || drag.pointerId !== event.pointerId) {
-                  return;
-                }
-
-                setAdjustment((current) => ({
-                  ...current,
-                  offsetX: drag.offsetX + event.clientX - drag.startX,
-                  offsetY: drag.offsetY + event.clientY - drag.startY
-                }));
-              }}
-              onPointerUp={() => setDrag(null)}
-              onPointerCancel={() => setDrag(null)}
-              onWheel={(event) => {
-                event.preventDefault();
-                changeZoom(event.deltaY > 0 ? -1 : 1);
-              }}
-            >
-              <svg
-                viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`}
-                preserveAspectRatio="none"
-                className="absolute inset-0 h-full w-full select-none"
-                aria-label={labels.mapTitle}
-              >
-                <defs>
-                  <pattern id="map-fallback-roads" width="92" height="92" patternUnits="userSpaceOnUse">
-                    <rect width="92" height="92" fill="#eef2ed" />
-                    <path d="M -12 72 C 20 48 48 48 104 12" fill="none" stroke="#d1d8ce" strokeWidth="7" />
-                    <path d="M -12 72 C 20 48 48 48 104 12" fill="none" stroke="#ffffff" strokeWidth="4" />
-                    <path d="M 18 -10 C 38 30 44 56 98 102" fill="none" stroke="#d8ded5" strokeWidth="5" />
-                  </pattern>
-                  <filter id="route-shadow" x="-20%" y="-20%" width="140%" height="140%">
-                    <feDropShadow dx="0" dy="2" stdDeviation="2" floodColor="#0f172a" floodOpacity="0.2" />
-                  </filter>
-                </defs>
-                <rect width={MAP_WIDTH} height={MAP_HEIGHT} fill="url(#map-fallback-roads)" />
-                {tiles.map((tile) => (
-                  <image
-                    key={tile.key}
-                    href={tileUrl(tile)}
-                    x={tile.x}
-                    y={tile.y}
-                    width={MAP_TILE_SIZE}
-                    height={MAP_TILE_SIZE}
-                    opacity="0.98"
-                  />
-                ))}
-                {routeSegments.map((segment, index) => {
-                  const from = positionedById.get(segment.fromPlaceId);
-                  const to = positionedById.get(segment.toPlaceId);
-
-                  if (!from || !to) {
-                    return null;
-                  }
-
-                  const color = dayColor(segment.dayNumber ?? from.dayNumber);
-                  const path = routePath(from, to, index);
-
-                  return (
-                    <g key={segment.id}>
-                      <path d={path} fill="none" stroke="#ffffff" strokeWidth="11" strokeLinecap="round" filter="url(#route-shadow)" />
-                      <path
-                        d={path}
-                        fill="none"
-                        stroke={color}
-                        strokeWidth="5"
-                        strokeLinecap="round"
-                        strokeDasharray={segment.distanceKm === 0 ? "10 10" : undefined}
-                      />
-                    </g>
-                  );
-                })}
-              </svg>
-
-              <div className="pointer-events-none absolute inset-0">
-                {positionedPlaces.map((place, index) => {
-                  const selected = selectedPlace?.id === place.id;
-                  const color = dayColor(place.dayNumber);
-
-                  return (
-                    <button
-                      key={place.id}
-                      type="button"
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onClick={() => setSelectedPlaceId(place.id)}
-                      className={`pointer-events-auto absolute z-20 flex size-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-4 bg-white text-xs font-black shadow-[0_8px_24px_rgba(15,23,42,0.26)] transition ${
-                        selected ? "scale-110 ring-4 ring-white" : "hover:scale-105"
-                      }`}
-                      style={{
-                        left: `${(place.x / MAP_WIDTH) * 100}%`,
-                        top: `${(place.y / MAP_HEIGHT) * 100}%`,
-                        borderColor: color,
-                        color
-                      }}
-                      title={`${place.title} - ${place.location}`}
-                    >
-                      {index + 1}
-                    </button>
-                  );
-                })}
-
-                {selectedPlace ? (
-                  <div
-                    className="pointer-events-auto absolute z-30 w-[240px] rounded-[8px] bg-slate-950/92 p-3 text-white shadow-[0_18px_44px_rgba(15,23,42,0.32)]"
-                    style={{
-                      left: `${(selectedPlace.x / MAP_WIDTH) * 100}%`,
-                      top: `${(selectedPlace.y / MAP_HEIGHT) * 100}%`,
-                      transform: "translate(-50%, calc(-100% - 22px))"
-                    }}
-                  >
-                    <div className="flex items-start gap-2">
-                      <div
-                        className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-black text-white"
-                        style={{ backgroundColor: dayColor(selectedPlace.dayNumber) }}
-                      >
-                        {selectedPlace.sequence + 1}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-black">{selectedPlace.title}</p>
-                        <p className="mt-1 line-clamp-2 text-xs font-semibold text-white/70">{selectedPlace.location}</p>
-                        <p className="mt-2 text-[11px] font-bold text-white/55">
-                          {selectedPlace.dayNumber ? formatDay(labels, selectedPlace.dayNumber) : labels.fullTrip} -{" "}
-                          {selectedPlace.locationStatus === "Unavailable" ? labels.locationUnavailable : selectedPlace.locationStatus}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="absolute left-4 top-4 z-20 rounded-[8px] border border-slate-200 bg-white/94 px-3 py-2 text-xs font-black text-slate-700 shadow-sm backdrop-blur">
-                <span className="inline-flex items-center gap-2">
-                  <Navigation2 className="size-4 text-indigo-600" />
-                  {view === "all" ? labels.fullTrip : typeof view === "number" ? formatDay(labels, view) : labels.fullTrip}
-                </span>
-              </div>
-
-              <div
-                className="absolute right-4 top-4 z-20 overflow-hidden rounded-[8px] border border-slate-200 bg-white shadow-sm"
-                onPointerDown={(event) => event.stopPropagation()}
-              >
-                <button
-                  type="button"
-                  onClick={() => changeZoom(1)}
-                  className="flex size-10 items-center justify-center border-b border-slate-200 text-slate-700 hover:bg-slate-50"
-                  title={labels.zoomIn}
-                >
-                  <Plus className="size-5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => changeZoom(-1)}
-                  className="flex size-10 items-center justify-center border-b border-slate-200 text-slate-700 hover:bg-slate-50"
-                  title={labels.zoomOut}
-                >
-                  <Minus className="size-5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={resetMap}
-                  className="flex size-10 items-center justify-center text-slate-700 hover:bg-slate-50"
-                  title={labels.resetMap}
-                >
-                  <Crosshair className="size-5" />
-                </button>
-              </div>
-
-              <div className="absolute bottom-4 left-4 z-20 rounded-[8px] border border-slate-200 bg-white/92 px-3 py-2 text-[11px] font-bold text-slate-500 shadow-sm backdrop-blur">
-                {labels.dragToPan} - {labels.wheelToZoom}
-              </div>
-              <div className="absolute bottom-4 right-4 z-20 rounded-[8px] border border-slate-200 bg-white/88 px-2 py-1 text-[10px] font-bold text-slate-500 shadow-sm backdrop-blur">
-                {labels.mapDataAttribution}
-              </div>
-            </div>
-          )}
+          <LeafletRouteMap
+            labels={labels}
+            places={viewPlaces}
+            routeSegments={routeSegments}
+            selectedPlaceId={selectedPlaceId}
+            onSelectPlace={setSelectedPlaceId}
+            viewLabel={view === "all" ? labels.fullTrip : typeof view === "number" ? formatDay(labels, view) : labels.fullTrip}
+            overlayTitle={positionedPlaces.length === 0 ? labels.locationsUnavailableTitle : undefined}
+            overlayBody={positionedPlaces.length === 0 ? labels.locationsUnavailableBody : undefined}
+          />
         </div>
 
         <aside className="space-y-4 bg-slate-50/70 p-4">

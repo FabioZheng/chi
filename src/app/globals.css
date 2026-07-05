@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
 
 :root {
   --background: #f6f7fb;
@@ -54,4 +55,57 @@ button {
     linear-gradient(rgba(23, 29, 45, 0.045) 1px, transparent 1px),
     linear-gradient(90deg, rgba(23, 29, 45, 0.045) 1px, transparent 1px);
   background-size: 32px 32px;
+}
+
+.leaflet-itinerary-map {
+  height: 100%;
+  width: 100%;
+  background: #d9ecf2;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.leaflet-itinerary-map .leaflet-control-zoom {
+  border: 1px solid #d7dce7;
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+  overflow: hidden;
+}
+
+.leaflet-itinerary-map .leaflet-control-zoom a {
+  border-color: #e2e8f0;
+  color: #334155;
+}
+
+.leaflet-itinerary-map .leaflet-control-attribution {
+  border-radius: 8px 0 0 0;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.itinerary-leaflet-marker-shell {
+  background: transparent;
+  border: 0;
+}
+
+.itinerary-leaflet-marker {
+  align-items: center;
+  background: #ffffff;
+  border: 4px solid var(--marker-color, #7c3aed);
+  border-radius: 999px;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.28);
+  color: var(--marker-color, #7c3aed);
+  display: flex;
+  font-size: 12px;
+  font-weight: 900;
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+
+.itinerary-leaflet-marker.is-selected {
+  box-shadow:
+    0 0 0 5px #ffffff,
+    0 16px 34px rgba(15, 23, 42, 0.32);
+  transform: scale(1.08);
 }
