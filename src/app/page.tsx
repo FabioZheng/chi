@@ -26,7 +26,7 @@ import {
   saveUserMemory
 } from "@/agents/memoryAgent";
 import { ItineraryCanvas } from "@/components/ItineraryCanvas";
-import { EmptyState, ImpactBadge, Panel } from "@/components/Panel";
+import { EmptyState, ImpactBadge, Panel, SourceBadge } from "@/components/Panel";
 import { PromptComposer } from "@/components/PromptComposer";
 import { languageNames, type Language, uiText } from "@/i18n";
 import type {
@@ -34,6 +34,7 @@ import type {
   AgentTrace,
   Assumption,
   AssumptionCritique,
+  CheckpointDecision,
   ConfirmedPreference,
   ConstraintWarning,
   CostAssumption,
@@ -49,12 +50,35 @@ import type {
 type FlowSection = "prompt" | "conflicts" | "probes" | "learned" | "assumptions" | "itinerary" | "feasibility";
 type WorkflowStep = FlowSection;
 type LoadingStage = "conflicts" | "preferences" | "itinerary" | null;
+type PreferenceControlState = "active" | "locked" | "ignored";
+type PreferencePriority = "primary" | "normal" | "low";
+
+type PreferenceControl = {
+  state: PreferenceControlState;
+  priority: PreferencePriority;
+};
+
+type HiddenPreferenceInsight = {
+  id: string;
+  title: string;
+  explicitSignals: string[];
+  uncertainty: string;
+  hiddenPreference: string;
+  whyItMatters: string;
+  confidence: number;
+  probeQuestion: string;
+  selectedAnswer: PreferenceProbeAnswer | null;
+  learnedPreference: LearnedPreference | null;
+  control: PreferenceControl;
+};
 
 type PersistedSession = {
   prompt: string;
+  checkpointDecision: CheckpointDecision | null;
   detectedConflicts: DetectedConflict[];
   probeAnswers: Record<string, PreferenceProbeAnswer>;
   learnedPreferences: LearnedPreference[];
+  preferenceControls: Record<string, PreferenceControl>;
   assumptions: Assumption[];
   transportAssumptions: TransportAssumption[];
   accommodationAssumptions: AccommodationAssumption[];
@@ -74,50 +98,81 @@ const SESSION_STORAGE_KEY = "assumption-aware-agent-planner:guided-session";
 
 const flowText = {
   en: {
-    eyebrow: "Conflict-based discovery",
-    title: "Discover hidden travel preferences through trade-offs",
+    eyebrow: "Ambiguity-first trip planning",
+    title: "Start with a rough travel idea",
     subtitle:
-      "Start with a lazy prompt. The planner detects conflicts, asks deeper probes, learns preferences, then reviews assumptions before building the itinerary.",
+      "Type something short like \"Italy for one week\" or \"somewhere warm\". The planner turns that ambiguity into a few useful trade-off questions, then builds the trip from what it learns.",
     startNewSession: "Start New Session",
     restored: "Previous session restored",
     saved: "Session saved locally",
-    promptTitle: "Lazy Prompt",
-    promptBody: "Describe the trip loosely. The system will look for hidden trade-offs instead of showing a static preference form.",
-    promptPlaceholder: "e.g. Plan a trip to the Dolomites in September",
+    promptTitle: "Rough Trip Idea",
+    promptBody: "A destination, season, mood, or simple constraint is enough. The planner separates what you said from what still needs to be discovered.",
+    promptPlaceholder: "Try \"Japan in October\", \"somewhere warm\", or \"I have 5 days off\"",
     promptTooShort: "Type at least 4 characters",
-    detectConflicts: "Detect Conflicts",
-    detectingConflicts: "Detecting conflicts",
-    conflictsTitle: "Conflict Detection",
-    conflictsBody: "Latent conflicts and risky assumptions found in the prompt.",
-    probesTitle: "Preference Probes",
-    probesBody: "Answer trade-off questions with options that meaningfully change the plan.",
-    learnedTitle: "Learned Preferences",
-    learnedBody: "Preferences inferred from your answers, ready to guide planning.",
-    assumptionsTitle: "Assumption Review",
-    assumptionsBody: "Review assumptions derived from learned preferences before planning.",
-    itineraryTitle: "Itinerary Generation",
-    itineraryBody: "The final plan explains which learned preferences influenced decisions.",
+    promptExamplesLabel: "Try",
+    promptExamples: ["Italy for one week", "Somewhere warm", "Cheap trip to Europe", "Things to do in Tokyo", "I have 5 days off"],
+    knownFromPrompt: "What you already said",
+    knownFallback: "A rough idea is enough to begin.",
+    stillUncertain: "What we will discover next",
+    uncertainTripShape: "Trip shape",
+    uncertainBudgetComfort: "Budget and comfort",
+    uncertainPaceInterests: "Pace and interests",
+    uncertainLogistics: "Transport and stay choices",
+    detectConflicts: "Check for Hidden Preferences",
+    detectingConflicts: "Checking whether a checkpoint is needed",
+    conflictsTitle: "Hidden-Preference Checkpoints",
+    conflictsBody: "Checkpoint decision, evidence, stage, and hidden preferences detected from the vague prompt.",
+    probesTitle: "Checkpoint Questions",
+    probesBody: "Answer only the lightweight questions that should materially change the plan.",
+    learnedTitle: "Living Preference Profile",
+    learnedBody: "Inspect, lock, lower priority, or ignore the preferences learned for this trip.",
+    assumptionsTitle: "Assumptions Triggered by Checkpoints",
+    assumptionsBody: "Transport, stay, and cost assumptions created from resolved checkpoints.",
+    itineraryTitle: "Trip Plan",
+    itineraryBody: "A route, map, costs, and trade-offs based on what we learned.",
     feasibilityTitle: "Feasibility Checks",
     current: "Current",
     completed: "Completed",
     waiting: "Waiting",
     confidence: "confidence",
-    hiddenPreference: "Hidden preference",
+    hiddenPreference: "What we need to learn",
     whyItMatters: "Why it matters",
     planningImpact: "Planning impact",
-    chooseOption: "Choose this option",
+    chooseOption: "This feels right",
     answered: "Answered",
     unanswered: "Unanswered",
-    learnPreferences: "Learn Preferences",
-    learningPreferences: "Learning preferences",
-    reviewAssumptions: "Review assumptions",
-    generateItinerary: "Generate Itinerary",
+    learnPreferences: "Use My Answers",
+    learningPreferences: "Learning from your answers",
+    reviewAssumptions: "Review Planning Assumptions",
+    generateItinerary: "Build the Trip",
     generatingItinerary: "Generating itinerary",
-    assumptionHint: "Accepted, edited, and non-rejected assumptions remain available to the planner.",
+    assumptionHint: "Kept, edited, and non-excluded consequences remain available to the planner.",
     originalPrompt: "Original prompt",
     learnedInfluences: "Learned preference influence",
-    noConflicts: "No conflicts detected yet.",
-    noLearned: "No learned preferences yet.",
+    noConflicts: "Start with any rough trip idea.",
+    noCheckpointNeeded: "No checkpoint needed",
+    checkpointNeeded: "Checkpoint needed",
+    nonPlanningPrompt: "This does not look like a planning task",
+    checkpointDecision: "Checkpoint decision",
+    checkpointStage: "Checkpoint stage",
+    missingCategories: "Missing preference categories",
+    assumptionRisk: "Assumption risk",
+    expectedPlanImpact: "Expected plan impact",
+    interactionCost: "Interaction cost",
+    proceedWithoutCheckpoint: "Proceed without checkpoint",
+    beforeAccommodation: "Before accommodation",
+    beforeItinerary: "Before itinerary",
+    beforeFinalPlan: "Before final plan",
+    noneStage: "None",
+    evaluationSignals: "Evaluation Signals",
+    checkpointMetrics: "Checkpoint metrics",
+    preferenceExpressedRate: "Preference Expressed Rate",
+    preferenceMetProxy: "Preference Met Proxy",
+    checkpointQuestionCount: "Checkpoint questions",
+    activePreferenceCount: "Active preferences",
+    interactionBurden: "Interaction burden",
+    noGroundTruth: "Ground-truth precision/recall needs labeled evaluation data.",
+    noLearned: "Answer a clarifying question to start shaping the plan.",
     noAssumptions: "No assumptions ready for review yet.",
     noItinerary: "No itinerary generated yet.",
     noWarnings: "No feasibility warnings yet.",
@@ -125,62 +180,125 @@ const flowText = {
     rejected: "Rejected",
     resetNotice: "Clears prompt, conflicts, answers, learned preferences, itinerary, warnings, and persisted session state.",
     errorTitle: "Workflow step failed",
-    preferenceHistory: "Detected Preferences",
-    currentCheckpoint: "Current Checkpoint",
-    planningSteps: "Planning Steps",
+    preferenceHistory: "Preference Profile",
+    currentCheckpoint: "Next Best Step",
+    planningSteps: "Planning Flow",
     assumptionValue: "Planning assumption",
     assumptionReason: "Why this was inferred",
-    useAssumption: "Use",
-    reviewLater: "Review",
+    useAssumption: "Keep",
+    reviewLater: "Needs review",
     excludeAssumption: "Exclude",
-    assumptionDecision: "Planning decision",
+    assumptionDecision: "Consequence control",
     assumptionsReadySummary: "ready for itinerary generation",
-    traceTitle: "Agent trace"
+    traceTitle: "Agent trace",
+    explicitSignals: "Explicit signals",
+    uncertainty: "Still uncertain",
+    whyAsked: "Why the system asked this",
+    agentEvidence: "Agent evidence trail",
+    whatChanges: "What changes in the plan",
+    selectedAnswer: "Selected answer",
+    notAnsweredYet: "Not answered yet",
+    preferenceStatus: "Preference status",
+    modelConfidence: "Model confidence",
+    userControl: "User control",
+    source: "Source",
+    lockPreference: "Lock",
+    unlockPreference: "Unlock",
+    ignorePreference: "Ignore",
+    restorePreference: "Restore",
+    makePrimary: "Make primary",
+    lowerPriority: "Lower priority",
+    activePreference: "Active",
+    lockedPreference: "Locked",
+    ignoredPreference: "Ignored",
+    primaryPriority: "Primary",
+    normalPriority: "Normal",
+    lowPriority: "Lower priority",
+    preferenceProfileHint: "Locked and active preferences guide the planner. Ignored preferences are excluded.",
+    consequencesHint: "These assumptions are downstream consequences of the preference profile, not the main research object.",
+    preferenceDetail: "Preference detail",
+    preferenceDetailHint: "Specify missing details here, such as cities, neighborhoods, dates, or constraints. Edits are sent to the planner without changing model confidence.",
+    plannerImpactNote: "This preference is sent to the planner as trip guidance.",
+    lowerPriorityPlannerNote: "Treat this preference as lower priority unless it conflicts with locked preferences.",
+    promptSignalLabel: "Prompt",
+    memorySignalLabel: "Memory",
+    noPreferenceInsights: "No hidden preference insights yet."
   },
   zh: {
-    eyebrow: "冲突式偏好发现",
-    title: "通过取舍发现隐藏旅行偏好",
-    subtitle: "从模糊提示开始，先识别潜在冲突，再用深入问题学习偏好，最后审核假设并生成行程。",
+    eyebrow: "从模糊想法开始的旅行规划",
+    title: "先说一个粗略旅行想法",
+    subtitle: "可以只输入“意大利一周”或“想去温暖的地方”。系统会把模糊想法变成几个有用的取舍问题，再根据学到的偏好生成行程。",
     startNewSession: "开始新会话",
     restored: "已恢复上次会话",
     saved: "会话已保存到本地",
-    promptTitle: "模糊提示",
-    promptBody: "简单描述行程，系统会寻找隐藏取舍，而不是展示静态偏好表单。",
-    promptPlaceholder: "例如：帮我规划九月去多洛米蒂的旅行",
+    promptTitle: "粗略旅行想法",
+    promptBody: "只说目的地、季节、心情或一个简单限制就够了。系统会区分你已经说出的信息，以及还需要一起弄清楚的部分。",
+    promptPlaceholder: "试试“十月去日本”“想去温暖的地方”或“我有 5 天假”",
     promptTooShort: "请至少输入 4 个字符",
-    detectConflicts: "检测冲突",
-    detectingConflicts: "正在检测冲突",
-    conflictsTitle: "冲突检测",
-    conflictsBody: "从提示中发现的潜在冲突和风险假设。",
-    probesTitle: "偏好探问",
-    probesBody: "回答会真正改变规划策略的取舍问题。",
-    learnedTitle: "已学到的偏好",
-    learnedBody: "从回答中推断出的偏好，将用于指导规划。",
-    assumptionsTitle: "假设审核",
-    assumptionsBody: "在规划前审核由已学偏好推导出的假设。",
-    itineraryTitle: "行程生成",
-    itineraryBody: "最终方案会说明哪些已学偏好影响了规划决策。",
+    promptExamplesLabel: "可以这样开始",
+    promptExamples: ["意大利一周", "想去温暖的地方", "欧洲低预算旅行", "东京有什么好玩", "我有 5 天假"],
+    knownFromPrompt: "你已经说出的信息",
+    knownFallback: "一个粗略想法就可以开始。",
+    stillUncertain: "接下来要一起弄清楚",
+    uncertainTripShape: "行程形状",
+    uncertainBudgetComfort: "预算与舒适度",
+    uncertainPaceInterests: "节奏与兴趣",
+    uncertainLogistics: "交通与住宿选择",
+    detectConflicts: "检查隐藏偏好",
+    detectingConflicts: "正在判断是否需要检查点",
+    conflictsTitle: "隐藏偏好检查点",
+    conflictsBody: "从模糊提示中识别检查点决策、依据、阶段和隐藏偏好。",
+    probesTitle: "检查点问题",
+    probesBody: "只回答会明显改变方案的轻量问题。",
+    learnedTitle: "动态偏好画像",
+    learnedBody: "查看、锁定、降级或忽略本次旅行学到的偏好。",
+    assumptionsTitle: "由检查点触发的假设",
+    assumptionsBody: "由已解决检查点推导出的交通、住宿和费用假设。",
+    itineraryTitle: "旅行方案",
+    itineraryBody: "根据已学偏好生成路线、地图、费用和取舍说明。",
     feasibilityTitle: "可行性检查",
     current: "当前",
     completed: "已完成",
     waiting: "等待中",
     confidence: "置信度",
-    hiddenPreference: "隐藏偏好",
+    hiddenPreference: "需要了解的偏好",
     whyItMatters: "为什么重要",
     planningImpact: "规划影响",
-    chooseOption: "选择此项",
+    chooseOption: "这更符合我",
     answered: "已回答",
     unanswered: "未回答",
-    learnPreferences: "学习偏好",
-    learningPreferences: "正在学习偏好",
-    reviewAssumptions: "审核假设",
-    generateItinerary: "生成行程",
+    learnPreferences: "采用我的回答",
+    learningPreferences: "正在理解你的回答",
+    reviewAssumptions: "审核规划假设",
+    generateItinerary: "生成旅行方案",
     generatingItinerary: "正在生成行程",
-    assumptionHint: "已接受、已编辑和未拒绝的假设会继续提供给规划器。",
+    assumptionHint: "保留、已编辑和未排除的规划后果会继续提供给规划器。",
     originalPrompt: "原始提示",
     learnedInfluences: "已学偏好的影响",
-    noConflicts: "尚未检测到冲突。",
-    noLearned: "尚未学到偏好。",
+    noConflicts: "先输入任意粗略旅行想法。",
+    noCheckpointNeeded: "无需检查点",
+    checkpointNeeded: "需要检查点",
+    nonPlanningPrompt: "这看起来不是规划任务",
+    checkpointDecision: "检查点决策",
+    checkpointStage: "检查点阶段",
+    missingCategories: "缺失偏好类别",
+    assumptionRisk: "假设风险",
+    expectedPlanImpact: "预期方案影响",
+    interactionCost: "交互成本",
+    proceedWithoutCheckpoint: "无需检查点，直接继续",
+    beforeAccommodation: "住宿前",
+    beforeItinerary: "行程前",
+    beforeFinalPlan: "最终方案前",
+    noneStage: "无",
+    evaluationSignals: "评估信号",
+    checkpointMetrics: "检查点指标",
+    preferenceExpressedRate: "偏好表达率",
+    preferenceMetProxy: "偏好满足代理指标",
+    checkpointQuestionCount: "检查点问题数",
+    activePreferenceCount: "生效偏好数",
+    interactionBurden: "交互负担",
+    noGroundTruth: "精确率/召回率需要带标注的评估数据。",
+    noLearned: "回答一个澄清问题后，方案就会开始成形。",
     noAssumptions: "尚无可审核假设。",
     noItinerary: "尚未生成行程。",
     noWarnings: "暂无可行性提醒。",
@@ -188,17 +306,49 @@ const flowText = {
     rejected: "已拒绝",
     resetNotice: "会清空提示、冲突、回答、已学偏好、行程、提醒和本地会话状态。",
     errorTitle: "流程步骤失败",
-    preferenceHistory: "已识别偏好",
-    currentCheckpoint: "当前检查点",
-    planningSteps: "规划步骤",
+    preferenceHistory: "偏好画像",
+    currentCheckpoint: "下一步建议",
+    planningSteps: "规划流程",
     assumptionValue: "规划假设",
     assumptionReason: "推断依据",
-    useAssumption: "采用",
-    reviewLater: "待确认",
+    useAssumption: "保留",
+    reviewLater: "需确认",
     excludeAssumption: "排除",
-    assumptionDecision: "规划处理",
+    assumptionDecision: "后果控制",
     assumptionsReadySummary: "可用于生成行程",
-    traceTitle: "智能体轨迹"
+    traceTitle: "智能体轨迹",
+    explicitSignals: "明确线索",
+    uncertainty: "仍不确定",
+    whyAsked: "为什么系统会问",
+    agentEvidence: "智能体依据链",
+    whatChanges: "会如何改变方案",
+    selectedAnswer: "已选回答",
+    notAnsweredYet: "尚未回答",
+    preferenceStatus: "偏好状态",
+    modelConfidence: "模型置信度",
+    userControl: "用户控制",
+    source: "来源",
+    lockPreference: "锁定",
+    unlockPreference: "解锁",
+    ignorePreference: "忽略",
+    restorePreference: "恢复",
+    makePrimary: "设为重点",
+    lowerPriority: "降低优先级",
+    activePreference: "生效中",
+    lockedPreference: "已锁定",
+    ignoredPreference: "已忽略",
+    primaryPriority: "重点",
+    normalPriority: "普通",
+    lowPriority: "低优先级",
+    preferenceProfileHint: "已锁定和生效中的偏好会指导规划；已忽略的偏好不会传给规划器。",
+    consequencesHint: "这些假设是偏好画像的下游结果，不是主要研究对象。",
+    preferenceDetail: "偏好细节",
+    preferenceDetailHint: "可在这里补充城市、街区、日期或限制条件。修改会传给规划器，但不会改变模型置信度。",
+    plannerImpactNote: "这个偏好会作为旅行指导传给规划器。",
+    lowerPriorityPlannerNote: "除非与已锁定偏好冲突，否则将此偏好视为低优先级。",
+    promptSignalLabel: "提示",
+    memorySignalLabel: "记忆",
+    noPreferenceInsights: "尚无隐藏偏好洞察。"
   }
 } as const;
 
@@ -215,9 +365,11 @@ function runningTrace(agent: AgentTrace["agent"], summary: string): AgentTrace {
 function emptySession(language: Language): PersistedSession {
   return {
     prompt: "",
+    checkpointDecision: null,
     detectedConflicts: [],
     probeAnswers: {},
     learnedPreferences: [],
+    preferenceControls: {},
     assumptions: [],
     transportAssumptions: [],
     accommodationAssumptions: [],
@@ -256,6 +408,69 @@ function statusTone(status: ReturnType<typeof sectionStatus>) {
   }
 
   return "border-slate-200 bg-slate-50 text-slate-500";
+}
+
+function defaultPreferenceControl(): PreferenceControl {
+  return {
+    state: "active",
+    priority: "normal"
+  };
+}
+
+function normalizePreferenceControls(
+  preferences: LearnedPreference[],
+  current: Record<string, PreferenceControl>
+): Record<string, PreferenceControl> {
+  return Object.fromEntries(
+    preferences.map((preference) => {
+      const control = current[preference.id] || defaultPreferenceControl();
+      return [preference.id, control];
+    })
+  );
+}
+
+function preferenceControlTone(control: PreferenceControl) {
+  if (control.state === "ignored") {
+    return "border-rose-200 bg-rose-50 text-rose-700";
+  }
+
+  if (control.state === "locked") {
+    return "border-indigo-200 bg-indigo-50 text-indigo-700";
+  }
+
+  if (control.priority === "primary") {
+    return "border-violet-200 bg-violet-50 text-violet-700";
+  }
+
+  if (control.priority === "low") {
+    return "border-slate-200 bg-slate-50 text-slate-500";
+  }
+
+  return "border-emerald-200 bg-emerald-50 text-emerald-700";
+}
+
+function checkpointStageLabel(
+  stage: CheckpointDecision["checkpointStage"],
+  copy: {
+    beforeAccommodation: string;
+    beforeItinerary: string;
+    beforeFinalPlan: string;
+    noneStage: string;
+  }
+) {
+  if (stage === "beforeAccommodation") {
+    return copy.beforeAccommodation;
+  }
+
+  if (stage === "beforeItinerary") {
+    return copy.beforeItinerary;
+  }
+
+  if (stage === "beforeFinalPlan") {
+    return copy.beforeFinalPlan;
+  }
+
+  return copy.noneStage;
 }
 
 function isUnspecifiedText(value: string) {
@@ -343,6 +558,7 @@ export default function Home() {
   const [detectedConflicts, setDetectedConflicts] = useState<DetectedConflict[]>([]);
   const [probeAnswers, setProbeAnswers] = useState<Record<string, PreferenceProbeAnswer>>({});
   const [learnedPreferences, setLearnedPreferences] = useState<LearnedPreference[]>([]);
+  const [preferenceControls, setPreferenceControls] = useState<Record<string, PreferenceControl>>({});
   const [assumptions, setAssumptions] = useState<Assumption[]>([]);
   const [transportAssumptions, setTransportAssumptions] = useState<TransportAssumption[]>([]);
   const [accommodationAssumptions, setAccommodationAssumptions] = useState<AccommodationAssumption[]>([]);
@@ -363,6 +579,7 @@ export default function Home() {
 
   const labels = uiText[language];
   const copy = flowText[language];
+  const [checkpointDecision, setCheckpointDecision] = useState<CheckpointDecision | null>(null);
 
   useEffect(() => {
     const storedLanguage = window.localStorage.getItem("assumption-aware-agent-planner:language");
@@ -375,9 +592,11 @@ export default function Home() {
         const session = JSON.parse(rawSession) as PersistedSession;
         setLanguage(session.language || initialLanguage);
         setPrompt(session.prompt || "");
+        setCheckpointDecision(session.checkpointDecision || null);
         setDetectedConflicts(session.detectedConflicts || []);
         setProbeAnswers(session.probeAnswers || {});
         setLearnedPreferences(session.learnedPreferences || []);
+        setPreferenceControls(session.preferenceControls || {});
         setAssumptions(session.assumptions || []);
         setTransportAssumptions(session.transportAssumptions || []);
         setAccommodationAssumptions(session.accommodationAssumptions || []);
@@ -408,9 +627,11 @@ export default function Home() {
 
     const session: PersistedSession = {
       prompt,
+      checkpointDecision,
       detectedConflicts,
       probeAnswers,
       learnedPreferences,
+      preferenceControls,
       assumptions,
       transportAssumptions,
       accommodationAssumptions,
@@ -431,6 +652,7 @@ export default function Home() {
     accommodationAssumptions,
     activeSection,
     assumptions,
+    checkpointDecision,
     costAssumptions,
     critiques,
     detectedConflicts,
@@ -438,6 +660,7 @@ export default function Home() {
     itinerary,
     language,
     learnedPreferences,
+    preferenceControls,
     memoryStatus,
     probeAnswers,
     prompt,
@@ -449,10 +672,82 @@ export default function Home() {
   ]);
 
   const probeAnswerList = useMemo(() => Object.values(probeAnswers), [probeAnswers]);
+  const checkpointBypassed = Boolean(checkpointDecision?.isPlanningTask && checkpointDecision.checkpointNeeded === false);
+  const nonPlanningPrompt = Boolean(checkpointDecision && !checkpointDecision.isPlanningTask);
   const allProbesAnswered = detectedConflicts.length > 0 && detectedConflicts.every((conflict) => probeAnswers[conflict.id]);
+  const learnedPreferenceByConflict = useMemo(
+    () => new Map(learnedPreferences.map((preference) => [preference.conflictId, preference])),
+    [learnedPreferences]
+  );
+  const hiddenPreferenceInsights = useMemo<HiddenPreferenceInsight[]>(
+    () =>
+      detectedConflicts.map((conflict) => {
+        const answer = probeAnswers[conflict.id] || null;
+        const learnedPreference = learnedPreferenceByConflict.get(conflict.id) || null;
+        const control = learnedPreference ? preferenceControls[learnedPreference.id] || defaultPreferenceControl() : defaultPreferenceControl();
+        const explicitSignals = prompt.trim()
+          ? [`${copy.promptSignalLabel}: ${prompt.trim()}`]
+          : [copy.knownFallback];
+
+        if (memoryStatus?.used) {
+          explicitSignals.push(`${copy.memorySignalLabel}: ${memoryStatus.appliedPreferenceCount} ${labels.memoryAppliedLabel}`);
+        }
+
+        return {
+          id: conflict.id,
+          title: conflict.title,
+          explicitSignals,
+          uncertainty: conflict.hiddenPreference,
+          hiddenPreference: conflict.hiddenPreference,
+          whyItMatters: conflict.explanation,
+          confidence: conflict.confidence,
+          probeQuestion: conflict.probe.question,
+          selectedAnswer: answer,
+          learnedPreference,
+          control
+        };
+      }),
+    [
+      copy.knownFallback,
+      copy.memorySignalLabel,
+      copy.promptSignalLabel,
+      detectedConflicts,
+      labels.memoryAppliedLabel,
+      learnedPreferenceByConflict,
+      memoryStatus,
+      preferenceControls,
+      probeAnswers,
+      prompt
+    ]
+  );
+  const activeLearnedPreferences = useMemo(
+    () =>
+      learnedPreferences
+        .filter((preference) => {
+          const control = preferenceControls[preference.id] || defaultPreferenceControl();
+          return control.state !== "ignored" && preference.value.trim().length > 0;
+        })
+        .map((preference) => {
+          const control = preferenceControls[preference.id] || defaultPreferenceControl();
+          const normalizedPreference = {
+            ...preference,
+            value: preference.value.trim()
+          };
+
+          if (control.priority !== "low") {
+            return normalizedPreference;
+          }
+
+          return {
+            ...normalizedPreference,
+            planningImpact: `${copy.lowerPriorityPlannerNote} ${normalizedPreference.planningImpact}`
+          };
+        }),
+    [copy.lowerPriorityPlannerNote, learnedPreferences, preferenceControls]
+  );
   const confirmedPreferences = useMemo<ConfirmedPreference[]>(
     () => {
-      const learnedConfirmed: ConfirmedPreference[] = learnedPreferences.map((preference) => ({
+      const learnedConfirmed: ConfirmedPreference[] = activeLearnedPreferences.map((preference) => ({
         id: preference.id,
         category: preference.category,
         label: preference.label,
@@ -471,7 +766,7 @@ export default function Home() {
 
       return [...learnedConfirmed, ...assumptionConfirmed];
     },
-    [assumptions, learnedPreferences]
+    [activeLearnedPreferences, assumptions]
   );
   const usefulTransportAssumptions = useMemo(
     () => transportAssumptions.filter(isUsefulTransportAssumption),
@@ -485,9 +780,11 @@ export default function Home() {
 
   function applySession(session: PersistedSession) {
     setPrompt(session.prompt);
+    setCheckpointDecision(session.checkpointDecision || null);
     setDetectedConflicts(session.detectedConflicts);
     setProbeAnswers(session.probeAnswers);
     setLearnedPreferences(session.learnedPreferences);
+    setPreferenceControls(session.preferenceControls || {});
     setAssumptions(session.assumptions);
     setTransportAssumptions(session.transportAssumptions);
     setAccommodationAssumptions(session.accommodationAssumptions);
@@ -524,8 +821,10 @@ export default function Home() {
 
   function clearCurrentPlanningArtifacts() {
     setDetectedConflicts([]);
+    setCheckpointDecision(null);
     setProbeAnswers({});
     setLearnedPreferences([]);
+    setPreferenceControls({});
     setAssumptions([]);
     setTransportAssumptions([]);
     setAccommodationAssumptions([]);
@@ -546,6 +845,8 @@ export default function Home() {
       detectedConflicts.length > 0 ||
       Object.keys(probeAnswers).length > 0 ||
       learnedPreferences.length > 0 ||
+      Object.keys(preferenceControls).length > 0 ||
+      checkpointDecision !== null ||
       assumptions.length > 0 ||
       transportAssumptions.length > 0 ||
       accommodationAssumptions.length > 0 ||
@@ -580,9 +881,11 @@ export default function Home() {
         language
       });
 
+      setCheckpointDecision(result.checkpointDecision);
       setDetectedConflicts(result.detectedConflicts);
       setProbeAnswers({});
       setLearnedPreferences([]);
+      setPreferenceControls({});
       setAssumptions([]);
       setTransportAssumptions([]);
       setAccommodationAssumptions([]);
@@ -593,8 +896,13 @@ export default function Home() {
       setSelectedOptionId(null);
       setMemoryStatus(result.memoryStatus);
       setTrace(result.trace);
-      setWorkflowStep("probes");
-      openWorkflowSection("probes");
+      if (result.checkpointDecision.isPlanningTask && result.checkpointDecision.checkpointNeeded && result.detectedConflicts.length > 0) {
+        setWorkflowStep("probes");
+        openWorkflowSection("probes");
+      } else {
+        setWorkflowStep("conflicts");
+        openWorkflowSection("conflicts");
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : labels.analyzeError);
       setTrace((current) => current.map((entry) => ({ ...entry, status: "Error" })));
@@ -610,6 +918,14 @@ export default function Home() {
       return;
     }
 
+    const hasDownstreamProfile =
+      learnedPreferences.length > 0 ||
+      assumptions.length > 0 ||
+      transportAssumptions.length > 0 ||
+      accommodationAssumptions.length > 0 ||
+      costAssumptions.length > 0 ||
+      itinerary !== null;
+
     setProbeAnswers((current) => ({
       ...current,
       [conflict.id]: {
@@ -619,6 +935,20 @@ export default function Home() {
         planningImpact: option.planningImpact
       }
     }));
+
+    if (hasDownstreamProfile) {
+      setLearnedPreferences([]);
+      setPreferenceControls({});
+      setAssumptions([]);
+      setTransportAssumptions([]);
+      setAccommodationAssumptions([]);
+      setCostAssumptions([]);
+      setCritiques([]);
+      setItinerary(null);
+      setWarnings([]);
+      setSelectedOptionId(null);
+      setWorkflowStep("probes");
+    }
   }
 
   async function handleLearnPreferences() {
@@ -640,6 +970,7 @@ export default function Home() {
       });
 
       setLearnedPreferences(result.learnedPreferences);
+      setPreferenceControls((current) => normalizePreferenceControls(result.learnedPreferences, current));
       setAssumptions(result.assumptions);
       setTransportAssumptions(result.transportAssumptions);
       setAccommodationAssumptions(result.accommodationAssumptions);
@@ -661,7 +992,9 @@ export default function Home() {
   }
 
   async function handleGenerate() {
-    if (assumptions.length === 0 || loadingStage !== null) {
+    const canGenerateWithoutCheckpoint = Boolean(checkpointDecision?.isPlanningTask && checkpointDecision.checkpointNeeded === false);
+
+    if ((!canGenerateWithoutCheckpoint && (assumptions.length === 0 || activeLearnedPreferences.length === 0)) || loadingStage !== null) {
       return;
     }
 
@@ -669,6 +1002,7 @@ export default function Home() {
     setError(null);
     setTrace((current) => [
       ...current,
+      runningTrace("Input Consistency Agent", labels.consistencyRunning),
       runningTrace("Planner Agent", copy.generatingItinerary),
       runningTrace("Constraint Checker Agent", labels.checkerRunning)
     ]);
@@ -678,7 +1012,7 @@ export default function Home() {
         prompt,
         detectedConflicts,
         probeAnswers: probeAnswerList,
-        learnedPreferences,
+        learnedPreferences: activeLearnedPreferences,
         assumptions: assumptions.filter((assumption) => assumption.status !== "Rejected"),
         transportAssumptions: usefulTransportAssumptions,
         accommodationAssumptions: usefulAccommodationAssumptions,
@@ -696,7 +1030,12 @@ export default function Home() {
       setMemory(updatedMemory);
       saveUserMemory(updatedMemory);
       setTrace((current) => [
-        ...current.filter((entry) => entry.agent !== "Planner Agent" && entry.agent !== "Constraint Checker Agent"),
+        ...current.filter(
+          (entry) =>
+            entry.agent !== "Input Consistency Agent" &&
+            entry.agent !== "Planner Agent" &&
+            entry.agent !== "Constraint Checker Agent"
+        ),
         ...result.trace
       ]);
       setWorkflowStep("itinerary");
@@ -705,7 +1044,11 @@ export default function Home() {
       setError(caught instanceof Error ? caught.message : labels.planError);
       setTrace((current) =>
         current.map((entry) =>
-          entry.agent === "Planner Agent" || entry.agent === "Constraint Checker Agent" ? { ...entry, status: "Error" } : entry
+          entry.agent === "Input Consistency Agent" ||
+          entry.agent === "Planner Agent" ||
+          entry.agent === "Constraint Checker Agent"
+            ? { ...entry, status: "Error" }
+            : entry
         )
       );
     } finally {
@@ -714,6 +1057,11 @@ export default function Home() {
   }
 
   function handleComposerGenerate() {
+    if (nonPlanningPrompt) {
+      openWorkflowSection("conflicts");
+      return;
+    }
+
     if (sectionComplete.assumptions) {
       void handleGenerate();
       return;
@@ -756,12 +1104,48 @@ export default function Home() {
     );
   }
 
+  function handleLearnedPreferenceValueChange(id: string, value: string) {
+    setLearnedPreferences((current) =>
+      current.map((preference) =>
+        preference.id === id
+          ? {
+              ...preference,
+              value,
+              source: "User"
+            }
+          : preference
+      )
+    );
+    setItinerary(null);
+    setWarnings([]);
+    setSelectedOptionId(null);
+
+    if (workflowStep === "itinerary" || workflowStep === "feasibility") {
+      setWorkflowStep("learned");
+      setActiveSection("learned");
+    }
+  }
+
+  function updatePreferenceControl(id: string, update: Partial<PreferenceControl>) {
+    setPreferenceControls((current) => {
+      const existing = current[id] || defaultPreferenceControl();
+
+      return {
+        ...current,
+        [id]: {
+          ...existing,
+          ...update
+        }
+      };
+    });
+  }
+
   const sectionComplete: Record<FlowSection, boolean> = {
     prompt: prompt.trim().length >= 4,
-    conflicts: detectedConflicts.length > 0,
-    probes: allProbesAnswered,
-    learned: learnedPreferences.length > 0,
-    assumptions: assumptions.length > 0,
+    conflicts: checkpointDecision !== null,
+    probes: checkpointBypassed || allProbesAnswered,
+    learned: checkpointBypassed || learnedPreferences.length > 0,
+    assumptions: checkpointBypassed || assumptions.length > 0,
     itinerary: Boolean(itinerary),
     feasibility: warnings.length > 0
   };
@@ -791,13 +1175,23 @@ export default function Home() {
     {
       key: "conflicts",
       title: copy.conflictsTitle,
-      body: detectedConflicts.length ? `${detectedConflicts.length} ${copy.completed.toLowerCase()}` : copy.waiting,
+      body: checkpointDecision
+        ? checkpointDecision.checkpointNeeded
+          ? `${detectedConflicts.length} ${copy.checkpointQuestionCount.toLowerCase()}`
+          : checkpointDecision.isPlanningTask
+            ? copy.noCheckpointNeeded
+            : copy.nonPlanningPrompt
+        : copy.waiting,
       done: sectionComplete.conflicts
     },
     {
       key: "probes",
       title: copy.probesTitle,
-      body: detectedConflicts.length ? `${probeAnswerList.length}/${detectedConflicts.length} ${copy.answered.toLowerCase()}` : copy.waiting,
+      body: checkpointBypassed
+        ? copy.proceedWithoutCheckpoint
+        : detectedConflicts.length
+          ? `${probeAnswerList.length}/${detectedConflicts.length} ${copy.answered.toLowerCase()}`
+          : copy.waiting,
       done: sectionComplete.probes
     },
     {
@@ -871,7 +1265,7 @@ export default function Home() {
 
         <div className="flex flex-wrap items-center justify-end gap-2">
           {[
-            { label: "Planner", icon: BrainCircuit, tone: "text-blue-700 bg-blue-50 border-blue-100" },
+            { label: labels.shortAgentLabels["Planner Agent"], icon: BrainCircuit, tone: "text-blue-700 bg-blue-50 border-blue-100" },
             { label: labels.accommodation, icon: Database, tone: "text-orange-700 bg-orange-50 border-orange-100" },
             { label: labels.categoryLabels.food, icon: Sparkles, tone: "text-emerald-700 bg-emerald-50 border-emerald-100" },
             { label: labels.mapTitle, icon: Route, tone: "text-violet-700 bg-violet-50 border-violet-100" }
@@ -929,7 +1323,7 @@ export default function Home() {
               {prompt || copy.promptPlaceholder}
             </p>
             <div className="mt-3 space-y-2">
-              {visiblePreferenceRows.length === 0 && assumptions.length === 0 ? (
+              {visiblePreferenceRows.length === 0 ? (
                 <EmptyState title={copy.noLearned} body={labels.waitingPrompt} />
               ) : null}
               {visiblePreferenceRows.slice(0, 5).map((preference) => (
@@ -939,35 +1333,29 @@ export default function Home() {
                       <p className="text-xs font-black text-slate-950">{labels.categoryLabels[preference.category]}</p>
                       <p className="mt-1 line-clamp-2 text-xs font-semibold leading-5 text-slate-500">{preference.value}</p>
                     </div>
-                    <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-1 text-[10px] font-black text-emerald-700">
-                      {labels.confirmed}
+                    <span
+                      className={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-black ${preferenceControlTone(
+                        preferenceControls[preference.id] || defaultPreferenceControl()
+                      )}`}
+                    >
+                      {(preferenceControls[preference.id] || defaultPreferenceControl()).state === "ignored"
+                        ? copy.ignoredPreference
+                        : (preferenceControls[preference.id] || defaultPreferenceControl()).state === "locked"
+                          ? copy.lockedPreference
+                          : copy.activePreference}
                     </span>
                   </div>
                 </div>
               ))}
-              {visiblePreferenceRows.length === 0
-                ? assumptions.slice(0, 5).map((assumption) => (
-                    <div key={assumption.id} className="rounded-[8px] border border-slate-100 bg-white p-3 shadow-sm">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-xs font-black text-slate-950">{labels.categoryLabels[assumption.category]}</p>
-                          <p className="mt-1 line-clamp-2 text-xs font-semibold leading-5 text-slate-500">{assumption.value}</p>
-                        </div>
-                        <span
-                          className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-black ${
-                            assumption.status === "Rejected"
-                              ? "bg-rose-50 text-rose-700"
-                              : assumption.status === "Accepted" || assumption.status === "Edited"
-                                ? "bg-emerald-50 text-emerald-700"
-                                : "bg-orange-50 text-orange-700"
-                          }`}
-                        >
-                          {labels.assumptionStatusLabels[assumption.status]}
-                        </span>
-                      </div>
-                    </div>
-                  ))
-                : null}
+              {visiblePreferenceRows.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => openWorkflowSection("learned")}
+                  className="w-full rounded-[8px] border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs font-black text-indigo-700"
+                >
+                  {copy.userControl}
+                </button>
+              ) : null}
             </div>
           </Panel>
 
@@ -983,6 +1371,23 @@ export default function Home() {
                 >
                   {copy.probesTitle}
                 </button>
+              </div>
+            ) : checkpointBypassed ? (
+              <div className="rounded-[8px] border border-emerald-100 bg-emerald-50/70 p-3">
+                <p className="text-sm font-black text-emerald-950">{copy.noCheckpointNeeded}</p>
+                <p className="mt-2 text-xs font-semibold leading-5 text-emerald-900/75">{checkpointDecision?.rationale}</p>
+                <button
+                  type="button"
+                  onClick={handleGenerate}
+                  className="mt-3 rounded-[8px] bg-emerald-600 px-3 py-2 text-xs font-black text-white"
+                >
+                  {copy.proceedWithoutCheckpoint}
+                </button>
+              </div>
+            ) : nonPlanningPrompt ? (
+              <div className="rounded-[8px] border border-rose-100 bg-rose-50/70 p-3">
+                <p className="text-sm font-black text-rose-950">{copy.nonPlanningPrompt}</p>
+                <p className="mt-2 text-xs font-semibold leading-5 text-rose-900/75">{checkpointDecision?.rationale}</p>
               </div>
             ) : assumptions.length > 0 ? (
               <div className="rounded-[8px] border border-indigo-100 bg-indigo-50/70 p-3">
@@ -1063,11 +1468,28 @@ export default function Home() {
             onOpen={openWorkflowSection}
           >
             <div className="space-y-3">
-              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+              <div className="grid gap-3 md:grid-cols-2">
                 <div className="rounded-[8px] border border-slate-200 bg-slate-50 p-4">
-                  <p className="text-xs font-black uppercase text-slate-400">{copy.originalPrompt}</p>
-                  <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{prompt || labels.waitingPrompt}</p>
+                  <p className="text-xs font-black uppercase text-slate-400">{copy.knownFromPrompt}</p>
+                  <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{prompt || copy.knownFallback}</p>
                 </div>
+                <div className="rounded-[8px] border border-indigo-100 bg-indigo-50/60 p-4">
+                  <p className="text-xs font-black uppercase text-indigo-500">{copy.stillUncertain}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {[
+                      copy.uncertainTripShape,
+                      copy.uncertainBudgetComfort,
+                      copy.uncertainPaceInterests,
+                      copy.uncertainLogistics
+                    ].map((item) => (
+                      <span key={item} className="rounded-full border border-white/80 bg-white px-2.5 py-1 text-xs font-bold text-indigo-700">
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="flex justify-end">
                 <button
                   type="button"
                   onClick={handleDetectConflicts}
@@ -1092,26 +1514,115 @@ export default function Home() {
             activeSection={activeSection}
             onOpen={openWorkflowSection}
           >
-            {detectedConflicts.length === 0 ? (
-              <EmptyState title={copy.noConflicts} />
-            ) : (
-              <div className="grid gap-3 md:grid-cols-2">
-                {detectedConflicts.map((conflict) => (
-                  <div key={conflict.id} className="rounded-[8px] border border-slate-200 bg-white p-4 shadow-sm">
-                    <div className="flex items-start justify-between gap-3">
-                      <h3 className="text-sm font-black text-slate-950">{conflict.title}</h3>
-                      <span className="shrink-0 rounded-full bg-indigo-50 px-2 py-1 text-[11px] font-bold text-indigo-700">
-                        {Math.round(conflict.confidence * 100)}% {copy.confidence}
-                      </span>
+            <div className="space-y-3">
+              {checkpointDecision ? (
+                <div
+                  className={`rounded-[8px] border p-4 ${
+                    nonPlanningPrompt
+                      ? "border-rose-200 bg-rose-50"
+                      : checkpointDecision.checkpointNeeded
+                        ? "border-amber-200 bg-amber-50"
+                        : "border-emerald-200 bg-emerald-50"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-black uppercase opacity-70">{copy.checkpointDecision}</p>
+                      <h3 className="mt-1 text-lg font-black text-slate-950">
+                        {nonPlanningPrompt
+                          ? copy.nonPlanningPrompt
+                          : checkpointDecision.checkpointNeeded
+                            ? copy.checkpointNeeded
+                            : copy.noCheckpointNeeded}
+                      </h3>
                     </div>
-                    <p className="mt-2 text-xs font-black uppercase text-slate-400">{copy.whyItMatters}</p>
-                    <p className="mt-1 text-sm font-semibold leading-6 text-slate-600">{conflict.explanation}</p>
-                    <p className="mt-3 text-xs font-black uppercase text-slate-400">{copy.hiddenPreference}</p>
-                    <p className="mt-1 text-sm font-semibold leading-6 text-slate-700">{conflict.hiddenPreference}</p>
+                    <span
+                      className={`rounded-full border px-2.5 py-1 text-xs font-black ${
+                        checkpointDecision.checkpointNeeded
+                          ? "border-amber-300 bg-white text-amber-700"
+                          : "border-emerald-300 bg-white text-emerald-700"
+                      }`}
+                    >
+                      {checkpointStageLabel(checkpointDecision.checkpointStage, copy)}
+                    </span>
                   </div>
-                ))}
-              </div>
-            )}
+                  <p className="mt-3 text-sm font-semibold leading-6 text-slate-700">{checkpointDecision.rationale}</p>
+                  <div className="mt-4 grid gap-2 md:grid-cols-3">
+                    <div className="rounded-[8px] border border-white/80 bg-white/80 p-3">
+                      <p className="text-[11px] font-black uppercase text-slate-400">{copy.assumptionRisk}</p>
+                      <ImpactBadge impact={checkpointDecision.assumptionRisk} labels={labels.impactLabels} />
+                    </div>
+                    <div className="rounded-[8px] border border-white/80 bg-white/80 p-3">
+                      <p className="text-[11px] font-black uppercase text-slate-400">{copy.interactionCost}</p>
+                      <ImpactBadge impact={checkpointDecision.interactionCost} labels={labels.impactLabels} />
+                    </div>
+                    <div className="rounded-[8px] border border-white/80 bg-white/80 p-3">
+                      <p className="text-[11px] font-black uppercase text-slate-400">{copy.missingCategories}</p>
+                      <p className="mt-1 text-xs font-bold text-slate-700">
+                        {checkpointDecision.missingPreferenceCategories.length
+                          ? checkpointDecision.missingPreferenceCategories.map((category) => labels.categoryLabels[category]).join(", ")
+                          : copy.noneStage}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-3 rounded-[8px] border border-white/80 bg-white/80 p-3">
+                    <p className="text-[11px] font-black uppercase text-slate-400">{copy.expectedPlanImpact}</p>
+                    <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">{checkpointDecision.expectedPlanImpact}</p>
+                  </div>
+                  {checkpointBypassed ? (
+                    <button
+                      type="button"
+                      onClick={handleGenerate}
+                      disabled={loadingStage !== null}
+                      className="mt-4 flex h-10 items-center gap-2 rounded-[8px] bg-emerald-600 px-4 text-sm font-bold text-white shadow-[0_12px_28px_rgba(16,185,129,0.24)] disabled:cursor-not-allowed disabled:bg-emerald-200"
+                    >
+                      {loadingStage === "itinerary" ? <Loader2 className="size-4 animate-spin" /> : <Route className="size-4" />}
+                      {loadingStage === "itinerary" ? copy.generatingItinerary : copy.proceedWithoutCheckpoint}
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {hiddenPreferenceInsights.length === 0 ? (
+                <EmptyState title={checkpointDecision ? copy.noCheckpointNeeded : copy.noPreferenceInsights} body={copy.promptBody} />
+              ) : (
+                <div className="grid gap-3 md:grid-cols-2">
+                  {hiddenPreferenceInsights.map((insight) => (
+                    <article key={insight.id} className="rounded-[8px] border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <h3 className="text-sm font-black text-slate-950">{insight.title}</h3>
+                        <span className="shrink-0 rounded-full bg-indigo-50 px-2 py-1 text-[11px] font-bold text-indigo-700">
+                          {Math.round(insight.confidence * 100)}% {copy.modelConfidence}
+                        </span>
+                      </div>
+                      <p className="mt-3 text-xs font-black uppercase text-slate-400">{copy.explicitSignals}</p>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {insight.explicitSignals.map((signal) => (
+                          <span key={signal} className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-600">
+                            {signal}
+                          </span>
+                        ))}
+                      </div>
+                      <p className="mt-3 text-xs font-black uppercase text-slate-400">{copy.hiddenPreference}</p>
+                      <p className="mt-1 text-sm font-semibold leading-6 text-slate-700">{insight.hiddenPreference}</p>
+                      <details className="mt-3 rounded-[8px] border border-slate-100 bg-slate-50 p-3">
+                        <summary className="cursor-pointer text-xs font-black text-indigo-700">{copy.agentEvidence}</summary>
+                        <div className="mt-3 space-y-2 text-xs font-semibold leading-5 text-slate-600">
+                          <p>
+                            <span className="font-black text-slate-800">{copy.whyItMatters}: </span>
+                            {insight.whyItMatters}
+                          </p>
+                          <p>
+                            <span className="font-black text-slate-800">{copy.whyAsked}: </span>
+                            {insight.probeQuestion}
+                          </p>
+                        </div>
+                      </details>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
           </WorkflowSection>
 
           <WorkflowSection
@@ -1125,11 +1636,12 @@ export default function Home() {
             onOpen={openWorkflowSection}
           >
             {detectedConflicts.length === 0 ? (
-              <EmptyState title={copy.noConflicts} />
+              <EmptyState title={checkpointBypassed ? copy.proceedWithoutCheckpoint : copy.noConflicts} body={checkpointDecision?.rationale} />
             ) : (
               <div className="space-y-4">
                 {detectedConflicts.map((conflict) => {
                   const answer = probeAnswers[conflict.id];
+                  const insight = hiddenPreferenceInsights.find((item) => item.id === conflict.id);
 
                   return (
                     <div key={conflict.id} className="rounded-[8px] border border-slate-200 bg-white p-4">
@@ -1146,6 +1658,12 @@ export default function Home() {
                           {answer ? copy.answered : copy.unanswered}
                         </span>
                       </div>
+                      {insight ? (
+                        <div className="mt-3 rounded-[8px] border border-indigo-100 bg-indigo-50/60 p-3 text-xs font-semibold leading-5 text-indigo-900">
+                          <p className="font-black uppercase text-indigo-600">{copy.whyAsked}</p>
+                          <p className="mt-1">{insight.hiddenPreference}</p>
+                        </div>
+                      ) : null}
                       <div className="mt-3 grid gap-2 md:grid-cols-2">
                         {conflict.probe.options.map((option) => {
                           const selected = answer?.optionId === option.id;
@@ -1178,6 +1696,11 @@ export default function Home() {
                             </button>
                           );
                         })}
+                      </div>
+                      <div className="mt-3 rounded-[8px] border border-slate-100 bg-slate-50 p-3">
+                        <p className="text-[11px] font-black uppercase text-slate-400">{copy.selectedAnswer}</p>
+                        <p className="mt-1 text-sm font-black text-slate-900">{answer?.answer || copy.notAnsweredYet}</p>
+                        {answer ? <p className="mt-2 text-xs font-semibold leading-5 text-slate-600">{answer.planningImpact}</p> : null}
                       </div>
                     </div>
                   );
@@ -1212,14 +1735,160 @@ export default function Home() {
               <EmptyState title={copy.noLearned} />
             ) : (
               <div className="space-y-3">
-                <div className="grid gap-3 md:grid-cols-2">
-                  {learnedPreferences.map((preference) => (
-                    <div key={preference.id} className="rounded-[8px] border border-emerald-100 bg-emerald-50/60 p-3">
-                      <p className="text-xs font-black uppercase text-emerald-700">{labels.categoryLabels[preference.category]}</p>
-                      <h3 className="mt-1 text-sm font-black text-slate-950">{preference.value}</h3>
-                      <p className="mt-2 text-xs font-semibold leading-5 text-emerald-900/75">{preference.planningImpact}</p>
-                    </div>
-                  ))}
+                <div className="rounded-[8px] border border-indigo-100 bg-indigo-50/70 p-3">
+                  <p className="text-sm font-black text-indigo-950">{copy.preferenceProfileHint}</p>
+                </div>
+                <div className="grid gap-3">
+                  {learnedPreferences.map((preference) => {
+                    const control = preferenceControls[preference.id] || defaultPreferenceControl();
+                    const relatedInsight = hiddenPreferenceInsights.find((insight) => insight.learnedPreference?.id === preference.id);
+                    const priorityDisabled = control.state === "ignored";
+
+                    return (
+                      <article
+                        key={preference.id}
+                        className={`rounded-[8px] border bg-white p-4 shadow-sm ${
+                          control.state === "ignored" ? "border-rose-200 bg-rose-50/45" : "border-slate-200"
+                        }`}
+                      >
+                        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-black text-slate-600">
+                                {labels.categoryLabels[preference.category]}
+                              </span>
+                              <SourceBadge source={preference.source} labels={labels.sourceLabels} />
+                              <span className={`rounded-full border px-2 py-1 text-[11px] font-black ${preferenceControlTone(control)}`}>
+                                {control.state === "ignored"
+                                  ? copy.ignoredPreference
+                                  : control.state === "locked"
+                                    ? copy.lockedPreference
+                                    : copy.activePreference}
+                              </span>
+                              <span className="rounded-full border border-indigo-100 bg-indigo-50 px-2 py-1 text-[11px] font-black text-indigo-700">
+                                {control.priority === "primary"
+                                  ? copy.primaryPriority
+                                  : control.priority === "low"
+                                    ? copy.lowPriority
+                                    : copy.normalPriority}
+                              </span>
+                            </div>
+                            <h3 className="mt-3 text-base font-black text-slate-950">{preference.value}</h3>
+                            <label className="mt-3 block">
+                              <span className="text-[11px] font-black uppercase text-slate-400">{copy.preferenceDetail}</span>
+                              <textarea
+                                value={preference.value}
+                                onChange={(event) => handleLearnedPreferenceValueChange(preference.id, event.target.value)}
+                                rows={2}
+                                className="mt-1 min-h-16 w-full resize-y rounded-[8px] border border-slate-200 bg-white px-3 py-2 text-sm font-semibold leading-6 text-slate-900 outline-none transition focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100"
+                              />
+                              <span className="mt-1 block text-xs font-semibold leading-5 text-slate-500">{copy.preferenceDetailHint}</span>
+                            </label>
+                            <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{preference.planningImpact}</p>
+                            <div className="mt-3 grid gap-2 md:grid-cols-2">
+                              <div className="rounded-[8px] border border-slate-100 bg-slate-50 p-3">
+                                <p className="text-[11px] font-black uppercase text-slate-400">{copy.modelConfidence}</p>
+                                <p className="mt-1 text-sm font-black text-slate-950">{Math.round(preference.confidence * 100)}%</p>
+                              </div>
+                              <div className="rounded-[8px] border border-slate-100 bg-slate-50 p-3">
+                                <p className="text-[11px] font-black uppercase text-slate-400">{copy.whatChanges}</p>
+                                <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">{copy.plannerImpactNote}</p>
+                              </div>
+                            </div>
+                            {relatedInsight ? (
+                              <details className="mt-3 rounded-[8px] border border-slate-100 bg-slate-50 p-3">
+                                <summary className="cursor-pointer text-xs font-black text-indigo-700">{copy.agentEvidence}</summary>
+                                <p className="mt-2 text-xs font-semibold leading-5 text-slate-600">{relatedInsight.whyItMatters}</p>
+                                <p className="mt-2 text-xs font-semibold leading-5 text-slate-600">
+                                  {copy.selectedAnswer}: {relatedInsight.selectedAnswer?.answer || copy.notAnsweredYet}
+                                </p>
+                              </details>
+                            ) : null}
+                          </div>
+
+                          <div className="rounded-[8px] border border-slate-200 bg-white p-3">
+                            <p className="text-[11px] font-black uppercase text-slate-400">{copy.userControl}</p>
+                            <div className="mt-3 grid gap-2">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updatePreferenceControl(preference.id, {
+                                    state: control.state === "locked" ? "active" : "locked"
+                                  })
+                                }
+                                className={`rounded-[8px] border px-3 py-2 text-sm font-black transition ${
+                                  control.state === "locked"
+                                    ? "border-indigo-500 bg-indigo-600 text-white"
+                                    : "border-slate-200 bg-white text-slate-700 hover:border-indigo-200 hover:bg-indigo-50"
+                                }`}
+                              >
+                                {control.state === "locked" ? copy.unlockPreference : copy.lockPreference}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updatePreferenceControl(preference.id, {
+                                    state: control.state === "ignored" ? "active" : "ignored"
+                                  })
+                                }
+                                className={`rounded-[8px] border px-3 py-2 text-sm font-black transition ${
+                                  control.state === "ignored"
+                                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                    : "border-slate-200 bg-white text-slate-700 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                                }`}
+                              >
+                                {control.state === "ignored" ? copy.restorePreference : copy.ignorePreference}
+                              </button>
+                              <div className="grid grid-cols-3 gap-2">
+                                <button
+                                  type="button"
+                                  disabled={priorityDisabled}
+                                  onClick={() => updatePreferenceControl(preference.id, { priority: "primary" })}
+                                  className={`rounded-[8px] border px-2 py-2 text-xs font-black transition ${
+                                    priorityDisabled
+                                      ? "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300"
+                                      : control.priority === "primary"
+                                      ? "border-violet-500 bg-violet-600 text-white"
+                                      : "border-slate-200 bg-white text-slate-600 hover:bg-violet-50"
+                                  }`}
+                                >
+                                  {copy.makePrimary}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={priorityDisabled}
+                                  onClick={() => updatePreferenceControl(preference.id, { priority: "normal" })}
+                                  className={`rounded-[8px] border px-2 py-2 text-xs font-black transition ${
+                                    priorityDisabled
+                                      ? "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300"
+                                      : control.priority === "normal"
+                                      ? "border-emerald-500 bg-emerald-600 text-white"
+                                      : "border-slate-200 bg-white text-slate-600 hover:bg-emerald-50"
+                                  }`}
+                                >
+                                  {copy.normalPriority}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={priorityDisabled}
+                                  onClick={() => updatePreferenceControl(preference.id, { priority: "low" })}
+                                  className={`rounded-[8px] border px-2 py-2 text-xs font-black transition ${
+                                    priorityDisabled
+                                      ? "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300"
+                                      : control.priority === "low"
+                                      ? "border-slate-400 bg-slate-700 text-white"
+                                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                                  }`}
+                                >
+                                  {copy.lowerPriority}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
                 </div>
                 <button
                   type="button"
@@ -1268,7 +1937,8 @@ export default function Home() {
                   <p className="text-sm font-black text-indigo-950">
                     {acceptedCount + inferredCount} {copy.assumptionsReadySummary}
                   </p>
-                  <p className="mt-1 text-xs font-semibold leading-5 text-indigo-900/70">{copy.assumptionHint}</p>
+                  <p className="mt-1 text-xs font-semibold leading-5 text-indigo-900/70">{copy.consequencesHint}</p>
+                  <p className="mt-2 text-xs font-semibold leading-5 text-indigo-900/70">{copy.assumptionHint}</p>
                 </div>
 
                 <div className="grid gap-3">
@@ -1425,7 +2095,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={handleGenerate}
-                    disabled={learnedPreferences.length === 0 || loadingStage !== null}
+                    disabled={activeLearnedPreferences.length === 0 || loadingStage !== null}
                     className="flex h-10 items-center gap-2 rounded-[8px] bg-indigo-600 px-4 text-sm font-bold text-white shadow-[0_12px_28px_rgba(99,68,255,0.28)] disabled:cursor-not-allowed disabled:bg-indigo-200"
                   >
                     {loadingStage === "itinerary" ? <Loader2 className="size-4 animate-spin" /> : <Route className="size-4" />}
@@ -1508,7 +2178,7 @@ export default function Home() {
                     : item.key === "probes" || item.key === "learned" || item.key === "assumptions"
                       ? entry.agent === "Preference Probe Agent" || entry.agent === "Assumption Critic Agent"
                       : item.key === "itinerary"
-                        ? entry.agent === "Planner Agent"
+                        ? entry.agent === "Input Consistency Agent" || entry.agent === "Planner Agent"
                         : item.key === "feasibility"
                           ? entry.agent === "Constraint Checker Agent"
                           : false
@@ -1551,6 +2221,61 @@ export default function Home() {
             </div>
           </Panel>
 
+          <Panel title={copy.evaluationSignals} eyebrow={copy.checkpointMetrics} icon={<SearchCheck className="size-4" />}>
+            <div className="space-y-2">
+              <div className="rounded-[8px] bg-slate-50 p-3">
+                <p className="text-[11px] font-black uppercase text-slate-400">{copy.checkpointDecision}</p>
+                <p className="mt-1 text-sm font-black text-slate-950">
+                  {checkpointDecision
+                    ? nonPlanningPrompt
+                      ? copy.nonPlanningPrompt
+                      : checkpointDecision.checkpointNeeded
+                        ? copy.checkpointNeeded
+                        : copy.noCheckpointNeeded
+                    : copy.waiting}
+                </p>
+                {checkpointDecision ? (
+                  <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+                    {copy.checkpointStage}: {checkpointStageLabel(checkpointDecision.checkpointStage, copy)}
+                  </p>
+                ) : null}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-[8px] bg-slate-50 p-3">
+                  <p className="text-[11px] font-black uppercase text-slate-400">{copy.preferenceExpressedRate}</p>
+                  <p className="mt-1 text-sm font-black text-slate-950">
+                    {detectedConflicts.length > 0 ? `${Math.round((probeAnswerList.length / detectedConflicts.length) * 100)}%` : checkpointBypassed ? "100%" : "0%"}
+                  </p>
+                </div>
+                <div className="rounded-[8px] bg-slate-50 p-3">
+                  <p className="text-[11px] font-black uppercase text-slate-400">{copy.preferenceMetProxy}</p>
+                  <p className="mt-1 text-sm font-black text-slate-950">
+                    {learnedPreferences.length > 0 ? `${Math.round((activeLearnedPreferences.length / learnedPreferences.length) * 100)}%` : checkpointBypassed ? "100%" : "0%"}
+                  </p>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-[8px] bg-slate-50 p-3">
+                  <p className="text-[11px] font-black uppercase text-slate-400">{copy.checkpointQuestionCount}</p>
+                  <p className="mt-1 text-sm font-black text-slate-950">{detectedConflicts.length}</p>
+                </div>
+                <div className="rounded-[8px] bg-slate-50 p-3">
+                  <p className="text-[11px] font-black uppercase text-slate-400">{copy.activePreferenceCount}</p>
+                  <p className="mt-1 text-sm font-black text-slate-950">{activeLearnedPreferences.length}</p>
+                </div>
+              </div>
+              {checkpointDecision ? (
+                <div className="rounded-[8px] bg-slate-50 p-3">
+                  <p className="text-[11px] font-black uppercase text-slate-400">{copy.interactionBurden}</p>
+                  <div className="mt-1">
+                    <ImpactBadge impact={checkpointDecision.interactionCost} labels={labels.impactLabels} />
+                  </div>
+                </div>
+              ) : null}
+              <p className="text-xs font-semibold leading-5 text-slate-500">{copy.noGroundTruth}</p>
+            </div>
+          </Panel>
+
           <Panel title={labels.memoryStatusTitle} eyebrow={memoryStatus?.message || labels.memoryEmpty} icon={<Database className="size-4" />}>
             <div className="rounded-[8px] bg-slate-50 p-3">
               <p className="text-xs font-black text-slate-500">
@@ -1567,21 +2292,26 @@ export default function Home() {
       <PromptComposer
         prompt={prompt}
         onPromptChange={handlePromptChange}
-        onAnalyze={handleDetectConflicts}
         onGenerate={handleComposerGenerate}
         analyzing={loadingStage !== null && loadingStage !== "itinerary"}
         planning={loadingStage === "itinerary"}
-        canGenerate={sectionComplete.assumptions && loadingStage === null}
+        canGenerate={
+          sectionComplete.assumptions &&
+          (activeLearnedPreferences.length > 0 || checkpointBypassed) &&
+          !nonPlanningPrompt &&
+          loadingStage === null
+        }
         stats={promptStats}
         labels={{
           promptPlaceholder: copy.promptPlaceholder,
           promptTooShort: copy.promptTooShort,
-          analyze: copy.detectConflicts,
           generate: composerPrimaryLabel,
           assumptionsInferred: labels.assumptionsInferred,
           missingPreferences: labels.missingPreferences,
           highImpactUnresolved: labels.highImpactUnresolved,
-          memoryApplied: labels.memoryApplied
+          memoryApplied: labels.memoryApplied,
+          examplesLabel: copy.promptExamplesLabel,
+          examples: copy.promptExamples
         }}
       />
     </main>

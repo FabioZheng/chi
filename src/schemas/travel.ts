@@ -33,6 +33,15 @@ type CostCategoryValue =
   | "optionalActivities"
   | "other";
 type LocationStatusValue = "Exact" | "Approximate" | "Unavailable";
+type CheckpointStageValue = "beforeAccommodation" | "beforeItinerary" | "beforeFinalPlan" | "none";
+type InputConsistencySeverityValue = "Blocking" | "Warning";
+type InputConsistencyCategoryValue =
+  | "destinationScope"
+  | "preferenceConflict"
+  | "dateFeasibility"
+  | "budgetScope"
+  | "transportFeasibility"
+  | "other";
 
 const categoryAliases: Record<string, PreferenceCategoryValue> = {
   accommodation: "accommodationArea",
@@ -104,6 +113,33 @@ const warningTypeAliases: Record<string, ConstraintWarningTypeValue> = {
   pacing: "pacingIssue"
 };
 
+const inputConsistencyCategoryAliases: Record<string, InputConsistencyCategoryValue> = {
+  destinationscope: "destinationScope",
+  destination_scope: "destinationScope",
+  geography: "destinationScope",
+  geographic: "destinationScope",
+  location: "destinationScope",
+  region: "destinationScope",
+  scope: "destinationScope",
+  preferenceconflict: "preferenceConflict",
+  preference_conflict: "preferenceConflict",
+  contradiction: "preferenceConflict",
+  conflict: "preferenceConflict",
+  datefeasibility: "dateFeasibility",
+  date_feasibility: "dateFeasibility",
+  dates: "dateFeasibility",
+  timing: "dateFeasibility",
+  budgetscope: "budgetScope",
+  budget_scope: "budgetScope",
+  budget: "budgetScope",
+  cost: "budgetScope",
+  transportfeasibility: "transportFeasibility",
+  transport_feasibility: "transportFeasibility",
+  transport: "transportFeasibility",
+  transit: "transportFeasibility",
+  other: "other"
+};
+
 const costCategoryAliases: Record<string, CostCategoryValue> = {
   accommodation: "accommodation",
   accommodations: "accommodation",
@@ -148,6 +184,27 @@ const costCategoryLabels: Record<CostCategoryValue, string> = {
   localTransit: "Local transit",
   optionalActivities: "Optional activities",
   other: "Other"
+};
+
+const checkpointStageAliases: Record<string, CheckpointStageValue> = {
+  accommodation: "beforeAccommodation",
+  beforeaccommodation: "beforeAccommodation",
+  before_accommodation: "beforeAccommodation",
+  hotel: "beforeAccommodation",
+  lodging: "beforeAccommodation",
+  stay: "beforeAccommodation",
+  itinerary: "beforeItinerary",
+  route: "beforeItinerary",
+  beforeitinerary: "beforeItinerary",
+  before_itinerary: "beforeItinerary",
+  plan: "beforeItinerary",
+  final: "beforeFinalPlan",
+  beforefinalplan: "beforeFinalPlan",
+  before_final_plan: "beforeFinalPlan",
+  finalplan: "beforeFinalPlan",
+  none: "none",
+  no: "none",
+  skip: "none"
 };
 
 function asRecord(input: unknown): Record<string, unknown> {
@@ -253,6 +310,11 @@ function normalizedConfidence(input: unknown): number {
   return Number.isFinite(scaled) ? Math.min(1, Math.max(0, scaled)) : 0.7;
 }
 
+function normalizedCheckpointStage(input: unknown): CheckpointStageValue {
+  const key = asText(input, "beforeItinerary").replace(/[\s/-]+/g, "_").replace(/[^\w]/g, "").toLowerCase();
+  return checkpointStageAliases[key] || "beforeItinerary";
+}
+
 function normalizedOptions(input: unknown): string[] {
   if (!Array.isArray(input)) {
     return [];
@@ -264,6 +326,21 @@ function normalizedOptions(input: unknown): string[] {
 function normalizedWarningType(input: unknown): ConstraintWarningTypeValue {
   const key = asText(input, "pacingIssue").replace(/[\s/-]+/g, "_").replace(/[^\w]/g, "").toLowerCase();
   return warningTypeAliases[key] || "pacingIssue";
+}
+
+function normalizedInputConsistencySeverity(input: unknown): InputConsistencySeverityValue {
+  const value = asText(input, "Warning").toLowerCase();
+
+  if (value.includes("block") || value.includes("critical") || value.includes("error") || value.includes("cannot")) {
+    return "Blocking";
+  }
+
+  return "Warning";
+}
+
+function normalizedInputConsistencyCategory(input: unknown): InputConsistencyCategoryValue {
+  const key = asText(input, "other").replace(/[\s/-]+/g, "_").replace(/[^\w]/g, "").toLowerCase();
+  return inputConsistencyCategoryAliases[key] || "other";
 }
 
 function normalizedCostCategory(input: unknown): CostCategoryValue {
@@ -278,11 +355,11 @@ function normalizedBoolean(input: unknown, fallback = false): boolean {
 
   const value = asText(input).toLowerCase();
 
-  if (["true", "yes", "y", "1", "change", "changed", "different"].includes(value)) {
+  if (["true", "yes", "y", "1", "change", "changed", "different", "needed", "need", "planning"].includes(value)) {
     return true;
   }
 
-  if (["false", "no", "n", "0", "same", "unchanged"].includes(value)) {
+  if (["false", "no", "n", "0", "same", "unchanged", "none", "skip", "not needed", "non-planning", "nonplanning"].includes(value)) {
     return false;
   }
 
@@ -1047,12 +1124,64 @@ export const ConstraintWarningSchema = z.preprocess((input) => {
   status: z.enum(["Open", "Acknowledged", "Resolved"])
 }));
 
+export const InputConsistencyIssueSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const category = normalizedInputConsistencyCategory(record.category ?? record.type ?? record.issueType);
+  const severity = normalizedInputConsistencySeverity(record.severity ?? record.impact ?? record.status);
+  const rawConflictingInputs = record.conflictingInputs ?? record.conflicting_inputs ?? record.evidence ?? record.conflicts;
+  const conflictingInputs = Array.isArray(rawConflictingInputs)
+    ? rawConflictingInputs.map((item) => asText(item)).filter(Boolean).slice(0, 8)
+    : asText(rawConflictingInputs)
+      ? [asText(rawConflictingInputs)]
+      : [];
+
+  return {
+    id: asText(record.id, `consistency-${category}`),
+    category,
+    severity,
+    message: asText(record.message ?? record.issue ?? record.title, "The request contains a planning consistency issue."),
+    conflictingInputs,
+    recommendation: asText(record.recommendation ?? record.fix ?? record.suggestedFix, "Revise the conflicting preference before planning.")
+  };
+}, z.object({
+  id: z.string().min(1),
+  category: z.enum(["destinationScope", "preferenceConflict", "dateFeasibility", "budgetScope", "transportFeasibility", "other"]),
+  severity: z.enum(["Blocking", "Warning"]),
+  message: z.string().min(1),
+  conflictingInputs: z.array(z.string().min(1)),
+  recommendation: z.string().min(1)
+}));
+
+export const InputConsistencyOutputSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const issueCandidate = record.issues ?? record.validationIssues ?? record.problems;
+  const rawIssues: unknown[] = Array.isArray(issueCandidate) ? issueCandidate : [];
+  const parsedIssues = rawIssues.map((issue) => InputConsistencyIssueSchema.parse(issue));
+  const hasBlockingIssue = parsedIssues.some((issue) => issue.severity === "Blocking");
+  const explicitCanProceed =
+    record.canProceed ?? record.can_proceed ?? record.shouldProceed ?? record.should_proceed ?? record.isConsistent ?? record.is_consistent;
+
+  return {
+    summary: asText(
+      record.summary ?? record.rationale ?? record.overview,
+      hasBlockingIssue ? "The request has a blocking consistency issue." : "The request is internally consistent enough to plan."
+    ),
+    canProceed: explicitCanProceed === undefined ? !hasBlockingIssue : normalizedBoolean(explicitCanProceed, !hasBlockingIssue),
+    issues: parsedIssues
+  };
+}, z.object({
+  summary: z.string().min(1),
+  canProceed: z.boolean(),
+  issues: z.array(InputConsistencyIssueSchema)
+}));
+
 export const AgentTraceSchema = z.object({
   agent: z.enum([
     "Conflict Detector Agent",
     "Preference Probe Agent",
     "Preference Agent",
     "Assumption Critic Agent",
+    "Input Consistency Agent",
     "Planner Agent",
     "Constraint Checker Agent",
     "Memory Agent"
@@ -1085,18 +1214,65 @@ export const MemoryStatusSchema = z.object({
   message: z.string().min(1)
 });
 
+export const CheckpointStageSchema = z.enum(["beforeAccommodation", "beforeItinerary", "beforeFinalPlan", "none"]);
+
+export const CheckpointDecisionSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const rawCategories = record.missingPreferenceCategories ?? record.missing_preference_categories ?? record.categories;
+  const missingPreferenceCategories = Array.isArray(rawCategories) ? rawCategories.map(normalizedCategory) : [];
+  const checkpointNeeded = normalizedBoolean(record.checkpointNeeded ?? record.checkpoint_needed ?? record.needed, missingPreferenceCategories.length > 0);
+  const isPlanningTask = normalizedBoolean(record.isPlanningTask ?? record.is_planning_task ?? record.planningTask, true);
+  const checkpointStage = checkpointNeeded ? normalizedCheckpointStage(record.checkpointStage ?? record.checkpoint_stage ?? record.stage) : "none";
+
+  return {
+    isPlanningTask,
+    checkpointNeeded: isPlanningTask && checkpointNeeded,
+    checkpointStage: isPlanningTask && checkpointNeeded ? checkpointStage : "none",
+    missingPreferenceCategories,
+    assumptionRisk: normalizedImpact(record.assumptionRisk ?? record.assumption_risk ?? record.risk),
+    expectedPlanImpact: asText(
+      record.expectedPlanImpact ?? record.expected_plan_impact ?? record.planImpact ?? record.impact,
+      checkpointNeeded
+        ? "Resolving this checkpoint could materially change the plan."
+        : "The prompt appears specific enough to continue without an extra checkpoint."
+    ),
+    interactionCost: normalizedImpact(record.interactionCost ?? record.interaction_cost ?? record.userBurden ?? record.burden),
+    rationale: asText(
+      record.rationale ?? record.reason ?? record.explanation,
+      checkpointNeeded
+        ? "A missing preference would meaningfully affect the plan."
+        : "No lightweight checkpoint is needed before planning."
+    )
+  };
+}, z.object({
+  isPlanningTask: z.boolean(),
+  checkpointNeeded: z.boolean(),
+  checkpointStage: CheckpointStageSchema,
+  missingPreferenceCategories: z.array(PreferenceCategorySchema),
+  assumptionRisk: ImpactSchema,
+  expectedPlanImpact: z.string().min(1),
+  interactionCost: ImpactSchema,
+  rationale: z.string().min(1)
+}));
+
 export const ConflictDetectorOutputSchema = z.preprocess((input) => {
   const record = asRecord(input);
+  const rawConflicts = record.detectedConflicts ?? record.detected_conflicts ?? record.conflicts;
+  const detectedConflicts = Array.isArray(rawConflicts) ? rawConflicts : [];
 
   return {
     summary: asText(record.summary ?? record.overview, "Detected latent planning conflicts."),
-    detectedConflicts: Array.isArray(record.detectedConflicts ?? record.detected_conflicts ?? record.conflicts)
-      ? (record.detectedConflicts ?? record.detected_conflicts ?? record.conflicts)
-      : []
+    checkpointDecision: record.checkpointDecision ?? record.checkpoint_decision ?? record.decision ?? {
+      checkpointNeeded: detectedConflicts.length > 0,
+      missingPreferenceCategories: [],
+      checkpointStage: detectedConflicts.length > 0 ? "beforeItinerary" : "none"
+    },
+    detectedConflicts
   };
 }, z.object({
   summary: z.string().min(1),
-  detectedConflicts: z.array(DetectedConflictSchema).min(1)
+  checkpointDecision: CheckpointDecisionSchema,
+  detectedConflicts: z.array(DetectedConflictSchema)
 }));
 
 export const PreferenceAgentOutputSchema = z.preprocess((input) => {
@@ -1180,6 +1356,7 @@ export const AnalyzeRequestSchema = z.object({
 });
 
 export const AnalyzeResponseSchema = z.object({
+  checkpointDecision: CheckpointDecisionSchema,
   detectedConflicts: z.array(DetectedConflictSchema),
   assumptions: z.array(AssumptionSchema),
   transportAssumptions: z.array(TransportAssumptionSchema),

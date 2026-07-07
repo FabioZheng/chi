@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Loader2, SearchCheck, SendHorizontal, Sparkles } from "lucide-react";
+import { Loader2, SendHorizontal, Sparkles } from "lucide-react";
 
 type PromptStats = {
   assumptions: number;
@@ -13,7 +13,6 @@ type PromptStats = {
 type PromptComposerProps = {
   prompt: string;
   onPromptChange: (value: string) => void;
-  onAnalyze: () => void;
   onGenerate: () => void;
   analyzing: boolean;
   planning: boolean;
@@ -21,20 +20,20 @@ type PromptComposerProps = {
   stats: PromptStats;
   labels: {
     promptPlaceholder: string;
-    analyze: string;
     generate: string;
     assumptionsInferred: string;
     missingPreferences: string;
     highImpactUnresolved: string;
     memoryApplied: string;
     promptTooShort: string;
+    examplesLabel: string;
+    examples: readonly string[];
   };
 };
 
 export function PromptComposer({
   prompt,
   onPromptChange,
-  onAnalyze,
   onGenerate,
   analyzing,
   planning,
@@ -51,25 +50,16 @@ export function PromptComposer({
     { label: `${stats.memory} ${labels.memoryApplied}`, show: stats.memory > 0 }
   ].filter((chip) => chip.show);
   const hasPrompt = prompt.trim().length >= 4;
+  const showExamples = prompt.trim().length === 0 && chips.length === 0 && !analyzing && !planning;
 
   function focusPrompt() {
     inputRef.current?.focus();
   }
 
-  function submitAnalyze() {
-    setAttemptedSubmit(true);
-
-    if (analyzing || planning) {
-      return;
-    }
-
-    if (!hasPrompt) {
-      focusPrompt();
-      return;
-    }
-
-    onAnalyze();
+  function chooseExample(example: string) {
+    onPromptChange(example);
     setAttemptedSubmit(false);
+    requestAnimationFrame(focusPrompt);
   }
 
   function submitGenerate() {
@@ -89,12 +79,12 @@ export function PromptComposer({
   }
 
   return (
-    <section className="pointer-events-auto fixed bottom-4 left-1/2 z-[1200] w-[calc(100%-1.5rem)] max-w-5xl -translate-x-1/2 rounded-[22px] border border-slate-200/80 bg-white/92 p-2 shadow-[0_24px_70px_rgba(41,32,92,0.22)] backdrop-blur sm:rounded-full">
+    <section className="pointer-events-auto fixed bottom-4 left-1/2 z-[1200] w-[calc(100%-1.5rem)] max-w-5xl -translate-x-1/2 rounded-[22px] border border-slate-200/80 bg-white/92 p-2 shadow-[0_24px_70px_rgba(41,32,92,0.22)] backdrop-blur">
       <form
         className="flex flex-col gap-2 md:flex-row md:items-center"
         onSubmit={(event) => {
           event.preventDefault();
-          submitAnalyze();
+          submitGenerate();
         }}
       >
         <div className="flex min-w-0 flex-1 items-center gap-3 rounded-full bg-slate-50 px-3 py-2">
@@ -113,7 +103,7 @@ export function PromptComposer({
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey && !analyzing && !planning) {
                 event.preventDefault();
-                submitAnalyze();
+                submitGenerate();
               }
             }}
             placeholder={labels.promptPlaceholder}
@@ -134,37 +124,41 @@ export function PromptComposer({
           </div>
         </div>
 
-        <div className="flex shrink-0 gap-2">
+        <div className="flex shrink-0">
           <button
             type="submit"
             disabled={analyzing || planning}
-            data-testid="prompt-analyze-button"
-            className={`pointer-events-auto flex h-11 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 text-sm font-bold shadow-sm transition hover:border-indigo-200 hover:text-indigo-700 disabled:cursor-wait disabled:text-slate-300 ${
-              hasPrompt ? "text-slate-800" : "text-slate-500"
-            }`}
-          >
-            {analyzing ? <Loader2 className="size-4 animate-spin" /> : <SearchCheck className="size-4" />}
-            {labels.analyze}
-          </button>
-          <button
-            type="button"
-            onClick={submitGenerate}
-            disabled={analyzing || planning}
             data-testid="prompt-primary-button"
-            className={`pointer-events-auto flex h-11 min-w-12 items-center justify-center gap-2 rounded-full px-4 text-sm font-bold text-white transition disabled:cursor-wait disabled:from-indigo-200 disabled:to-violet-200 disabled:shadow-none ${
+            title={labels.generate}
+            aria-label={labels.generate}
+            className={`pointer-events-auto flex size-11 items-center justify-center rounded-full text-white transition disabled:cursor-wait disabled:from-indigo-200 disabled:to-violet-200 disabled:shadow-none ${
               canGenerate
                 ? "bg-gradient-to-br from-indigo-600 to-violet-600 shadow-[0_12px_28px_rgba(99,68,255,0.32)] hover:from-indigo-500 hover:to-violet-500"
                 : "bg-gradient-to-br from-indigo-500 to-violet-500 shadow-[0_12px_28px_rgba(99,68,255,0.24)] hover:from-indigo-500 hover:to-violet-500"
             }`}
           >
             {analyzing || planning ? <Loader2 className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
-            <span className="hidden sm:inline">{labels.generate}</span>
           </button>
         </div>
         {attemptedSubmit && !hasPrompt ? (
           <p className="px-3 text-xs font-bold text-rose-600 md:hidden">{labels.promptTooShort}</p>
         ) : null}
       </form>
+      {showExamples ? (
+        <div className="flex flex-wrap items-center gap-1.5 px-3 pb-1 pt-2">
+          <span className="mr-1 text-[11px] font-black uppercase text-slate-400">{labels.examplesLabel}</span>
+          {labels.examples.map((example) => (
+            <button
+              key={example}
+              type="button"
+              onClick={() => chooseExample(example)}
+              className="pointer-events-auto rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-1 text-xs font-bold text-indigo-700 transition hover:border-indigo-200 hover:bg-white"
+            >
+              {example}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }

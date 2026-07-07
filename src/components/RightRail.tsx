@@ -48,6 +48,7 @@ const expectedAgents: AgentTrace["agent"][] = [
   "Preference Probe Agent",
   "Preference Agent",
   "Assumption Critic Agent",
+  "Input Consistency Agent",
   "Planner Agent",
   "Constraint Checker Agent",
   "Memory Agent"
@@ -112,7 +113,7 @@ function statusForAgent(agent: AgentTrace["agent"], trace: AgentTrace[], needsIn
     return "Running";
   }
 
-  if (needsInput && (agent === "Planner Agent" || agent === "Constraint Checker Agent")) {
+  if (needsInput && (agent === "Input Consistency Agent" || agent === "Planner Agent" || agent === "Constraint Checker Agent")) {
     return "Pending";
   }
 
@@ -138,6 +139,10 @@ function fallbackSummary(agent: AgentTrace["agent"], prompt: string, labels: UIT
 
   if (agent === "Assumption Critic Agent") {
     return labels.waitingAssumptionData;
+  }
+
+  if (agent === "Input Consistency Agent") {
+    return labels.waitingConfirmedPreferences;
   }
 
   if (agent === "Planner Agent") {
@@ -188,7 +193,10 @@ export function RightRail({
     return {
       agent,
       index: index + 1,
-      state: agent === "Planner Agent" && needsInput ? ("Needs User Input" as StepState) : state,
+      state:
+        (agent === "Input Consistency Agent" || agent === "Planner Agent") && needsInput
+          ? ("Needs User Input" as StepState)
+          : state,
       summary
     };
   });

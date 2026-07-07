@@ -142,7 +142,8 @@ Every routeSegment fromPlaceId and toPlaceId must exactly match an id from mapPl
 Each option should include costBreakdown with accommodation, transport, food, attractions, localTransit, optionalActivities, and other when relevant. Include per-day and total estimates where possible.
 Each day should include costBreakdown where possible and accommodation describing where the traveler sleeps that night and whether it changes from the previous night.
 Use the reviewed transportAssumptions, accommodationAssumptions, and costAssumptions from the request when they are present unless a confirmed preference contradicts them.
-Use learnedPreferences and probeAnswers as primary planning guidance. Each itinerary option must include preferenceInfluences explaining which learned preferences shaped routing, pacing, accommodation, activities, and cost choices.
+Use learnedPreferences and probeAnswers as primary planning guidance. Treat learnedPreferences as the user's active hidden-preference profile; preferences omitted from the request should not influence the plan.
+Each itinerary option must include preferenceInfluences explaining which learned preferences shaped routing, pacing, accommodation, activities, and cost choices.
 Use exactly these enum values for risk fields: "Low", "Medium", "High".
 Write all user-facing text in the requested outputLanguage. Keep JSON field names, enum values, ids, and category values in English exactly as specified.
 Do not claim real-time availability. When exact opening hours or tickets matter, encode risk through bookingRisk and openingHoursRisk.

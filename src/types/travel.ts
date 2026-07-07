@@ -8,6 +8,7 @@ import type {
   AccommodationAssumptionSchema,
   AssumptionCritiqueSchema,
   AssumptionSchema,
+  CheckpointDecisionSchema,
   ConfirmedPreferenceSchema,
   ConflictDetectorOutputSchema,
   ConflictProbeOptionSchema,
@@ -18,6 +19,8 @@ import type {
   ItineraryDaySchema,
   ItineraryOptionSchema,
   ItinerarySchema,
+  InputConsistencyIssueSchema,
+  InputConsistencyOutputSchema,
   LearnedPreferenceSchema,
   MapPlaceSchema,
   MemoryStatusSchema,
@@ -44,6 +47,7 @@ export type AccommodationAssumption = z.infer<typeof AccommodationAssumptionSche
 export type Assumption = z.infer<typeof AssumptionSchema>;
 export type AssumptionCritique = z.infer<typeof AssumptionCritiqueSchema>;
 export type RiskyAssumption = AssumptionCritique;
+export type CheckpointDecision = z.infer<typeof CheckpointDecisionSchema>;
 export type ConfirmedPreference = z.infer<typeof ConfirmedPreferenceSchema>;
 export type ConflictDetectorOutput = z.infer<typeof ConflictDetectorOutputSchema>;
 export type ConflictProbeOption = z.infer<typeof ConflictProbeOptionSchema>;
@@ -54,6 +58,8 @@ export type DetectedConflict = z.infer<typeof DetectedConflictSchema>;
 export type Itinerary = z.infer<typeof ItinerarySchema>;
 export type ItineraryDay = z.infer<typeof ItineraryDaySchema>;
 export type ItineraryOption = z.infer<typeof ItineraryOptionSchema>;
+export type InputConsistencyIssue = z.infer<typeof InputConsistencyIssueSchema>;
+export type InputConsistencyOutput = z.infer<typeof InputConsistencyOutputSchema>;
 export type LearnedPreference = z.infer<typeof LearnedPreferenceSchema>;
 export type MapPlace = z.infer<typeof MapPlaceSchema>;
 export type MemoryStatus = z.infer<typeof MemoryStatusSchema>;

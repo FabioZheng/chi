@@ -55,6 +55,7 @@ export async function POST(request: Request) {
     const conflicts = await runConflictDetectorAgent(body);
 
     const response = AnalyzeResponseSchema.parse({
+      checkpointDecision: conflicts.checkpointDecision,
       detectedConflicts: conflicts.detectedConflicts,
       learnedPreferences: body.learnedPreferences,
       assumptions: [],

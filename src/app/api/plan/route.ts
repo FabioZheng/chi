@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { runConstraintCheckerAgent, runPlannerAgent } from "@/agents";
+import { runConstraintCheckerAgent, runInputConsistencyAgent, runPlannerAgent } from "@/agents";
 import { AgentError } from "@/agents/llm";
 import { PlanRequestSchema, PlanResponseSchema } from "@/schemas/travel";
-import type { AgentTrace, ConfirmedPreference, MemoryStatus, UserMemory } from "@/types/travel";
+import type { AgentTrace, ConfirmedPreference, InputConsistencyOutput, MemoryStatus, UserMemory } from "@/types/travel";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -60,6 +60,20 @@ function planTraceSummaries(input: { language: "en" | "zh"; optionCount: number;
   };
 }
 
+function consistencyErrorMessage(validation: InputConsistencyOutput, language: "en" | "zh") {
+  const blockingIssue = validation.issues.find((issue) => issue.severity === "Blocking");
+
+  if (!blockingIssue) {
+    return validation.summary;
+  }
+
+  if (language === "zh") {
+    return `规划一致性错误：${blockingIssue.message} 建议：${blockingIssue.recommendation}`;
+  }
+
+  return `Planning consistency error: ${blockingIssue.message} Recommendation: ${blockingIssue.recommendation}`;
+}
+
 function errorResponse(error: unknown) {
   if (error instanceof AgentError) {
     const status = error.code === "CONFIG" ? 500 : 502;
@@ -76,6 +90,20 @@ function errorResponse(error: unknown) {
 export async function POST(request: Request) {
   try {
     const body = PlanRequestSchema.parse(await request.json());
+    const consistency = await runInputConsistencyAgent(body);
+    const blockingIssues = consistency.issues.filter((issue) => issue.severity === "Blocking");
+
+    if (!consistency.canProceed || blockingIssues.length > 0) {
+      return NextResponse.json(
+        {
+          error: consistencyErrorMessage(consistency, body.language),
+          code: "INPUT_CONSISTENCY",
+          issues: consistency.issues
+        },
+        { status: 422 }
+      );
+    }
+
     const planner = await runPlannerAgent(body);
     const checker = await runConstraintCheckerAgent({
       prompt: body.prompt,
@@ -95,6 +123,7 @@ export async function POST(request: Request) {
       warnings: checker.warnings,
       memoryStatus: memoryStatus(body.memory, body.confirmedPreferences, body.language),
       trace: [
+        trace("Input Consistency Agent", consistency.summary, consistency.issues.length),
         trace("Planner Agent", summaries.planner, planner.itinerary.options.length),
         trace("Constraint Checker Agent", summaries.checker, checker.warnings.length)
       ]

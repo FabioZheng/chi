@@ -1,8 +1,8 @@
 # Assumption-Aware Agent Planner
 
-A React + TypeScript prototype for travel planning that exposes assumptions before generating an itinerary. Users enter short prompts such as "Plan a 3-day trip to Rome", run preference analysis, confirm or edit inferred assumptions, then generate a feasibility-checked itinerary.
+A Next.js + TypeScript research prototype for ambiguity-first travel planning. The app is designed for short, casual prompts such as "Italy for one week", "somewhere warm", or "cheap trip to Europe". Instead of starting with a static preference form, it detects hidden planning trade-offs, asks lightweight checkpoint questions, learns a controllable preference profile, reviews assumptions, validates input consistency, then generates a map-based itinerary.
 
-For full operating instructions, workflow details, and agent explanations, see [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+For full operating instructions, workflow details, and agent explanations, see [docs/USER_GUIDE.md](docs/USER_GUIDE.md). For a paper-style project explanation, see `docs/hidden_preference_elicitation_project_abstract.docx`.
 
 ## Setup
 
@@ -21,6 +21,8 @@ Configure `.env` with OpenRouter:
 LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=your_openrouter_key
 OPENROUTER_MODEL=openai/gpt-4.1-mini
+OPENROUTER_SITE_URL=http://localhost:3000
+OPENROUTER_APP_NAME=Assumption-Aware Agent Planner
 ```
 
 OpenAI remains available only if you explicitly set `LLM_PROVIDER=openai` and provide an `OPENAI_API_KEY`.
@@ -48,11 +50,20 @@ OPENROUTER_APP_NAME=Assumption-Aware Agent Planner
 
 Do not commit `.env`; use `.env.example` as the safe template.
 
+Recommended Vercel settings:
+
+- Framework preset: Next.js
+- Install command: `pnpm install --frozen-lockfile`
+- Build command: `pnpm build`
+- Output directory: leave empty/default for Next.js
+- Node.js version: 20 or newer
+
 ## Project Overview
 
 - `src/app/page.tsx`: dashboard flow and client state.
-- `src/app/api/analyze/route.ts`: runs Preference Agent and Assumption Critic Agent.
-- `src/app/api/plan/route.ts`: runs Planner Agent and Constraint Checker Agent.
+- `src/app/api/analyze/route.ts`: runs hidden-preference conflict detection and checkpoint analysis.
+- `src/app/api/probe/route.ts`: converts checkpoint answers into learned preferences and structured assumptions.
+- `src/app/api/plan/route.ts`: runs input consistency validation, itinerary generation, and feasibility checking.
 - `src/agents/`: provider calls, prompts, and localStorage memory helpers.
 - `src/schemas/`: Zod schemas for every agent request and output.
 - `src/types/`: shared TypeScript types inferred from Zod.
@@ -60,15 +71,28 @@ Do not commit `.env`; use `.env.example` as the safe template.
 
 ## Agents
 
-- Preference Agent: detects inferred, missing, and memory-derived preferences across budget, pace, food, transport, walking tolerance, accommodation area, interests, nightlife, and touristy/local style.
-- Assumption Critic Agent: flags risky assumptions, explains why they matter, and assigns Low, Medium, or High impact.
-- Planner Agent: generates day-by-day itinerary options from confirmed preferences and memory.
+- Conflict Detector Agent: identifies latent conflicts, hidden preferences, checkpoint need, checkpoint stage, assumption risk, expected plan impact, and interaction cost.
+- Preference Probe Agent: turns answered checkpoint options into learned preferences, transport assumptions, accommodation assumptions, and cost assumptions.
+- Assumption Critic Agent: flags risky assumptions and explains why they matter before final planning.
+- Input Consistency Agent: blocks incoherent planning input, such as a Europe trip with Tokyo marked as a required city.
+- Planner Agent: generates itinerary options, map places, route segments, cost breakdowns, accommodation details, and preference influence explanations.
 - Constraint Checker Agent: checks walking load, travel time, budget mismatch, booking risks, opening-hour risks, and pacing issues.
-- Memory Agent: stores confirmed preferences in `localStorage` and reuses them in future prompts with clear Memory labels.
+- Memory Agent: stores confirmed preferences in `localStorage` and reuses them across prompts unless the user starts a new session.
+
+## Current Workflow
+
+1. The user enters a short travel idea.
+2. The backend detects hidden trade-offs and decides whether a checkpoint is needed.
+3. The UI asks targeted preference probes instead of showing a full static form.
+4. The learned preference profile can be edited, locked, ignored, or reprioritized.
+5. Assumptions about transport, accommodation, and cost are reviewed before planning.
+6. Input consistency is checked before itinerary generation.
+7. The planner returns structured itinerary options with map places, route lines, costs, and preference influences.
+8. The feasibility checker flags risks and warnings.
 
 ## Validation
 
-All LLM outputs are requested as JSON objects and parsed through Zod before the UI receives them. Invalid JSON or schema mismatches fail the route instead of being displayed as trusted planning data.
+All LLM outputs are requested as JSON objects and parsed through Zod before the UI receives them. Invalid JSON or schema mismatches fail the route instead of being displayed as trusted planning data. The `/api/plan` route also runs an input consistency gate before calling the itinerary planner.
 
 ## Limitations
 

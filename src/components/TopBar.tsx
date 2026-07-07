@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, BrainCircuit, Database, MapPinned, Plus, Route, SearchCheck, ShieldAlert, Sparkles } from "lucide-react";
+import { Bot, BrainCircuit, Database, MapPinned, Plus, Route, SearchCheck, ShieldAlert, ShieldCheck, Sparkles } from "lucide-react";
 import { languageNames, type Language, type UIText, type ViewMode } from "@/i18n";
 import type { AgentTrace } from "@/types/travel";
 
@@ -19,6 +19,7 @@ const workflowAgents: AgentTrace["agent"][] = [
   "Preference Probe Agent",
   "Preference Agent",
   "Assumption Critic Agent",
+  "Input Consistency Agent",
   "Planner Agent",
   "Constraint Checker Agent",
   "Memory Agent"
@@ -29,6 +30,7 @@ const iconForAgent: Record<AgentTrace["agent"], typeof Bot> = {
   "Preference Probe Agent": Sparkles,
   "Preference Agent": Bot,
   "Assumption Critic Agent": ShieldAlert,
+  "Input Consistency Agent": ShieldCheck,
   "Planner Agent": Route,
   "Constraint Checker Agent": MapPinned,
   "Memory Agent": Database
