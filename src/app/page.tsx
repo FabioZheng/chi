@@ -27,7 +27,7 @@ import {
 } from "@/agents/memoryAgent";
 import { ItineraryCanvas } from "@/components/ItineraryCanvas";
 import { EmptyState, ImpactBadge, Panel, SourceBadge } from "@/components/Panel";
-import { PromptComposer } from "@/components/PromptComposer";
+import { PromptComposer, type PromptStatusChip } from "@/components/PromptComposer";
 import { languageNames, type Language, uiText } from "@/i18n";
 import type {
   AccommodationAssumption,
@@ -124,10 +124,10 @@ const flowText = {
     conflictsBody: "Checkpoint decision, evidence, stage, and hidden preferences detected from the vague prompt.",
     probesTitle: "Checkpoint Questions",
     probesBody: "Answer only the lightweight questions that should materially change the plan.",
-    learnedTitle: "Living Preference Profile",
-    learnedBody: "Inspect, lock, lower priority, or ignore the preferences learned for this trip.",
-    assumptionsTitle: "Assumptions Triggered by Checkpoints",
-    assumptionsBody: "Transport, stay, and cost assumptions created from resolved checkpoints.",
+    learnedTitle: "What we learned about you",
+    learnedBody: "Review the living preference profile before it shapes this trip.",
+    assumptionsTitle: "How this changes the itinerary",
+    assumptionsBody: "Planner behaviors generated from active preferences.",
     itineraryTitle: "Trip Plan",
     itineraryBody: "A route, map, costs, and trade-offs based on what we learned.",
     feasibilityTitle: "Feasibility Checks",
@@ -183,11 +183,11 @@ const flowText = {
     preferenceHistory: "Preference Profile",
     currentCheckpoint: "Next Best Step",
     planningSteps: "Planning Flow",
-    assumptionValue: "Planning assumption",
+    assumptionValue: "Planner behavior",
     assumptionReason: "Why this was inferred",
-    useAssumption: "Keep",
-    reviewLater: "Needs review",
-    excludeAssumption: "Exclude",
+    useAssumption: "Use in plan",
+    reviewLater: "Review suggested",
+    excludeAssumption: "Exclude from plan",
     assumptionDecision: "Consequence control",
     assumptionsReadySummary: "ready for itinerary generation",
     traceTitle: "Agent trace",
@@ -195,34 +195,53 @@ const flowText = {
     uncertainty: "Still uncertain",
     whyAsked: "Why the system asked this",
     agentEvidence: "Agent evidence trail",
-    whatChanges: "What changes in the plan",
     selectedAnswer: "Selected answer",
     notAnsweredYet: "Not answered yet",
     preferenceStatus: "Preference status",
     modelConfidence: "Model confidence",
     userControl: "User control",
     source: "Source",
-    lockPreference: "Lock",
-    unlockPreference: "Unlock",
     ignorePreference: "Ignore",
     restorePreference: "Restore",
     makePrimary: "Make primary",
     lowerPriority: "Lower priority",
     activePreference: "Active",
-    lockedPreference: "Locked",
     ignoredPreference: "Ignored",
     primaryPriority: "Primary",
     normalPriority: "Normal",
     lowPriority: "Lower priority",
-    preferenceProfileHint: "Locked and active preferences guide the planner. Ignored preferences are excluded.",
-    consequencesHint: "These assumptions are downstream consequences of the preference profile, not the main research object.",
+    preferenceProfileHint: "This is the user model. Confirm whether each learned preference is true about you, then decide how strongly it should matter.",
+    consequencesHint: "Planning consequences are planner behaviors generated from active preferences. They control this itinerary only; they do not rewrite the user model.",
     preferenceDetail: "Preference detail",
-    preferenceDetailHint: "Specify missing details here, such as cities, neighborhoods, dates, or constraints. Edits are sent to the planner without changing model confidence.",
-    plannerImpactNote: "This preference is sent to the planner as trip guidance.",
-    lowerPriorityPlannerNote: "Treat this preference as lower priority unless it conflicts with locked preferences.",
+    preferenceDetailHint: "Specify missing details here, such as cities, neighborhoods, dates, or constraints. Edits update the user model and the next generated plan.",
+    editPreference: "Edit preference",
+    inferredFrom: "Why we think this is true",
+    noActiveConsequences: "Ignored preferences do not create active planning consequences.",
+    noLinkedConsequences: "No concrete planner behavior is linked to this preference yet.",
+    usedInPlan: "Used in plan",
+    excludedFromPlan: "Excluded from plan",
+    lowConfidence: "Low confidence",
+    highImpact: "High impact",
+    mayAffectBudget: "May affect budget",
+    profileFlowPrompt: "Prompt and checkpoints",
+    profileFlowProfile: "Living Preference Profile",
+    profileFlowConsequences: "Planning Consequences",
+    profileFlowItinerary: "Itinerary generation",
+    lowerPriorityPlannerNote: "Treat this preference as lower priority unless it conflicts with primary preferences.",
     promptSignalLabel: "Prompt",
     memorySignalLabel: "Memory",
-    noPreferenceInsights: "No hidden preference insights yet."
+    noPreferenceInsights: "No hidden preference insights yet.",
+    chipClickHint: "Click the chip or an item to open the related review area.",
+    chipAssumptionsTitle: "Planning consequences",
+    chipMissingTitle: "Missing or excluded preferences",
+    chipHighImpactTitle: "High-impact unresolved items",
+    chipMemoryTitle: "Memory preferences",
+    chipNoItems: "No items to show.",
+    unresolvedStatus: "Unresolved",
+    savedStatus: "Saved",
+    appliedStatus: "Applied",
+    notAppliedStatus: "Not applied",
+    memorySaved: "memory preferences saved"
   },
   zh: {
     eyebrow: "从模糊想法开始的旅行规划",
@@ -250,10 +269,10 @@ const flowText = {
     conflictsBody: "从模糊提示中识别检查点决策、依据、阶段和隐藏偏好。",
     probesTitle: "检查点问题",
     probesBody: "只回答会明显改变方案的轻量问题。",
-    learnedTitle: "动态偏好画像",
-    learnedBody: "查看、锁定、降级或忽略本次旅行学到的偏好。",
-    assumptionsTitle: "由检查点触发的假设",
-    assumptionsBody: "由已解决检查点推导出的交通、住宿和费用假设。",
+    learnedTitle: "我们对你的了解",
+    learnedBody: "先检查动态偏好画像，再让它影响本次行程。",
+    assumptionsTitle: "这会怎样改变行程",
+    assumptionsBody: "由生效偏好生成的规划行为。",
     itineraryTitle: "旅行方案",
     itineraryBody: "根据已学偏好生成路线、地图、费用和取舍说明。",
     feasibilityTitle: "可行性检查",
@@ -309,11 +328,11 @@ const flowText = {
     preferenceHistory: "偏好画像",
     currentCheckpoint: "下一步建议",
     planningSteps: "规划流程",
-    assumptionValue: "规划假设",
+    assumptionValue: "规划行为",
     assumptionReason: "推断依据",
-    useAssumption: "保留",
-    reviewLater: "需确认",
-    excludeAssumption: "排除",
+    useAssumption: "用于本次方案",
+    reviewLater: "建议检查",
+    excludeAssumption: "不用于本次方案",
     assumptionDecision: "后果控制",
     assumptionsReadySummary: "可用于生成行程",
     traceTitle: "智能体轨迹",
@@ -321,34 +340,53 @@ const flowText = {
     uncertainty: "仍不确定",
     whyAsked: "为什么系统会问",
     agentEvidence: "智能体依据链",
-    whatChanges: "会如何改变方案",
     selectedAnswer: "已选回答",
     notAnsweredYet: "尚未回答",
     preferenceStatus: "偏好状态",
     modelConfidence: "模型置信度",
     userControl: "用户控制",
     source: "来源",
-    lockPreference: "锁定",
-    unlockPreference: "解锁",
     ignorePreference: "忽略",
     restorePreference: "恢复",
     makePrimary: "设为重点",
     lowerPriority: "降低优先级",
     activePreference: "生效中",
-    lockedPreference: "已锁定",
     ignoredPreference: "已忽略",
     primaryPriority: "重点",
     normalPriority: "普通",
     lowPriority: "低优先级",
-    preferenceProfileHint: "已锁定和生效中的偏好会指导规划；已忽略的偏好不会传给规划器。",
-    consequencesHint: "这些假设是偏好画像的下游结果，不是主要研究对象。",
+    preferenceProfileHint: "这里是用户模型。先确认每个已学偏好是否真的符合你，再决定它在规划中有多重要。",
+    consequencesHint: "规划后果是由生效偏好生成的规划行为，只影响本次行程，不会改写用户模型。",
     preferenceDetail: "偏好细节",
-    preferenceDetailHint: "可在这里补充城市、街区、日期或限制条件。修改会传给规划器，但不会改变模型置信度。",
-    plannerImpactNote: "这个偏好会作为旅行指导传给规划器。",
-    lowerPriorityPlannerNote: "除非与已锁定偏好冲突，否则将此偏好视为低优先级。",
+    preferenceDetailHint: "可在这里补充城市、街区、日期或限制条件。修改会更新用户模型，并影响下一次生成的方案。",
+    editPreference: "编辑偏好",
+    inferredFrom: "为什么认为这是真的",
+    noActiveConsequences: "已忽略的偏好不会产生生效中的规划后果。",
+    noLinkedConsequences: "这个偏好暂时没有关联到具体规划行为。",
+    usedInPlan: "用于方案",
+    excludedFromPlan: "已排除",
+    lowConfidence: "低置信度",
+    highImpact: "高影响",
+    mayAffectBudget: "可能影响预算",
+    profileFlowPrompt: "提示与检查点",
+    profileFlowProfile: "动态偏好画像",
+    profileFlowConsequences: "规划后果",
+    profileFlowItinerary: "生成行程",
+    lowerPriorityPlannerNote: "除非与重点偏好冲突，否则将此偏好视为低优先级。",
     promptSignalLabel: "提示",
     memorySignalLabel: "记忆",
-    noPreferenceInsights: "尚无隐藏偏好洞察。"
+    noPreferenceInsights: "尚无隐藏偏好洞察。",
+    chipClickHint: "点击标签或条目即可打开对应的审核区域。",
+    chipAssumptionsTitle: "规划后果",
+    chipMissingTitle: "缺失或已排除偏好",
+    chipHighImpactTitle: "高影响待解决项",
+    chipMemoryTitle: "记忆偏好",
+    chipNoItems: "暂无条目。",
+    unresolvedStatus: "待解决",
+    savedStatus: "已保存",
+    appliedStatus: "已应用",
+    notAppliedStatus: "未应用",
+    memorySaved: "项已保存记忆偏好"
   }
 } as const;
 
@@ -417,6 +455,10 @@ function defaultPreferenceControl(): PreferenceControl {
   };
 }
 
+function effectivePreferencePriority(control: PreferenceControl): PreferencePriority {
+  return control.state === "locked" ? "primary" : control.priority;
+}
+
 function normalizePreferenceControls(
   preferences: LearnedPreference[],
   current: Record<string, PreferenceControl>
@@ -424,7 +466,15 @@ function normalizePreferenceControls(
   return Object.fromEntries(
     preferences.map((preference) => {
       const control = current[preference.id] || defaultPreferenceControl();
-      return [preference.id, control];
+      return [
+        preference.id,
+        control.state === "locked"
+          ? {
+              state: "active",
+              priority: "primary"
+            }
+          : control
+      ];
     })
   );
 }
@@ -434,15 +484,11 @@ function preferenceControlTone(control: PreferenceControl) {
     return "border-rose-200 bg-rose-50 text-rose-700";
   }
 
-  if (control.state === "locked") {
-    return "border-indigo-200 bg-indigo-50 text-indigo-700";
-  }
-
-  if (control.priority === "primary") {
+  if (effectivePreferencePriority(control) === "primary") {
     return "border-violet-200 bg-violet-50 text-violet-700";
   }
 
-  if (control.priority === "low") {
+  if (effectivePreferencePriority(control) === "low") {
     return "border-slate-200 bg-slate-50 text-slate-500";
   }
 
@@ -570,6 +616,7 @@ export default function Home() {
   const [memory, setMemory] = useState<UserMemory>(emptyMemory());
   const [memoryStatus, setMemoryStatus] = useState<MemoryStatus | null>(null);
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
+  const [reviewFocusDay, setReviewFocusDay] = useState<number | null>(null);
   const [activeSection, setActiveSection] = useState<FlowSection>("prompt");
   const [workflowStep, setWorkflowStep] = useState<WorkflowStep>("prompt");
   const [loadingStage, setLoadingStage] = useState<LoadingStage>(null);
@@ -596,7 +643,7 @@ export default function Home() {
         setDetectedConflicts(session.detectedConflicts || []);
         setProbeAnswers(session.probeAnswers || {});
         setLearnedPreferences(session.learnedPreferences || []);
-        setPreferenceControls(session.preferenceControls || {});
+        setPreferenceControls(normalizePreferenceControls(session.learnedPreferences || [], session.preferenceControls || {}));
         setAssumptions(session.assumptions || []);
         setTransportAssumptions(session.transportAssumptions || []);
         setAccommodationAssumptions(session.accommodationAssumptions || []);
@@ -608,7 +655,7 @@ export default function Home() {
         setTrace(session.trace || []);
         setMemoryStatus(session.memoryStatus || null);
         setWorkflowStep(session.workflowStep || "prompt");
-        setActiveSection(session.activeSection || "prompt");
+        setActiveSection(session.activeSection === "assumptions" ? "learned" : session.activeSection || "prompt");
         setRestored(true);
       } catch {
         setLanguage(initialLanguage);
@@ -729,12 +776,13 @@ export default function Home() {
         })
         .map((preference) => {
           const control = preferenceControls[preference.id] || defaultPreferenceControl();
+          const priority = effectivePreferencePriority(control);
           const normalizedPreference = {
             ...preference,
             value: preference.value.trim()
           };
 
-          if (control.priority !== "low") {
+          if (priority !== "low") {
             return normalizedPreference;
           }
 
@@ -745,6 +793,17 @@ export default function Home() {
         }),
     [copy.lowerPriorityPlannerNote, learnedPreferences, preferenceControls]
   );
+  const activePreferenceCategories = useMemo(
+    () => new Set(activeLearnedPreferences.map((preference) => preference.category)),
+    [activeLearnedPreferences]
+  );
+  const plannerAssumptions = useMemo(
+    () =>
+      assumptions.filter(
+        (assumption) => activePreferenceCategories.has(assumption.category) && assumption.status !== "Rejected"
+      ),
+    [activePreferenceCategories, assumptions]
+  );
   const confirmedPreferences = useMemo<ConfirmedPreference[]>(
     () => {
       const learnedConfirmed: ConfirmedPreference[] = activeLearnedPreferences.map((preference) => ({
@@ -754,7 +813,7 @@ export default function Home() {
         value: preference.value,
         source: preference.source as ConfirmedPreference["source"]
       }));
-      const assumptionConfirmed: ConfirmedPreference[] = assumptions
+      const assumptionConfirmed: ConfirmedPreference[] = plannerAssumptions
         .filter((assumption) => assumption.status === "Accepted" || assumption.status === "Edited" || assumption.source === "Memory")
         .map((assumption) => ({
           id: assumption.id,
@@ -766,7 +825,7 @@ export default function Home() {
 
       return [...learnedConfirmed, ...assumptionConfirmed];
     },
-    [activeLearnedPreferences, assumptions]
+    [activeLearnedPreferences, plannerAssumptions]
   );
   const usefulTransportAssumptions = useMemo(
     () => transportAssumptions.filter(isUsefulTransportAssumption),
@@ -784,7 +843,7 @@ export default function Home() {
     setDetectedConflicts(session.detectedConflicts);
     setProbeAnswers(session.probeAnswers);
     setLearnedPreferences(session.learnedPreferences);
-    setPreferenceControls(session.preferenceControls || {});
+    setPreferenceControls(normalizePreferenceControls(session.learnedPreferences, session.preferenceControls || {}));
     setAssumptions(session.assumptions);
     setTransportAssumptions(session.transportAssumptions);
     setAccommodationAssumptions(session.accommodationAssumptions);
@@ -796,7 +855,7 @@ export default function Home() {
     setTrace(session.trace);
     setMemoryStatus(session.memoryStatus);
     setWorkflowStep(session.workflowStep);
-    setActiveSection(session.activeSection);
+    setActiveSection(session.activeSection === "assumptions" ? "learned" : session.activeSection);
   }
 
   function handleLanguageChange(nextLanguage: Language) {
@@ -813,11 +872,55 @@ export default function Home() {
   }
 
   function openWorkflowSection(section: FlowSection) {
-    setActiveSection(section);
+    const targetSection = section === "assumptions" ? "learned" : section;
+    setActiveSection(targetSection);
     window.setTimeout(() => {
-      document.getElementById(`workflow-${section}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      document.getElementById(`workflow-${targetSection}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 80);
   }
+
+  function openReviewTarget(targetId: string, section: FlowSection = "learned") {
+    const targetSection = section === "assumptions" ? "learned" : section;
+    setActiveSection(targetSection);
+    window.setTimeout(() => {
+      const target = document.getElementById(targetId) || document.getElementById(`workflow-${targetSection}`);
+      const enclosingDetails = target?.closest("details");
+
+      if (enclosingDetails) {
+        enclosingDetails.open = true;
+      }
+
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+
+      if (target && target.id === targetId) {
+        target.classList.add("ring-4", "ring-indigo-200", "ring-offset-2");
+        window.setTimeout(() => {
+          target.classList.remove("ring-4", "ring-indigo-200", "ring-offset-2");
+        }, 1800);
+      }
+    }, 120);
+  }
+
+  function openReviewPlanning(dayNumber?: number | null) {
+    setReviewFocusDay(dayNumber ?? null);
+    setActiveSection("assumptions");
+    window.setTimeout(() => {
+      const target = dayNumber ? document.getElementById(`day-plan-${dayNumber}`) : document.getElementById("workflow-assumptions");
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+  }
+
+  useEffect(() => {
+    if (activeSection === "itinerary" || !reviewFocusDay) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      document.getElementById(`day-plan-${reviewFocusDay}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+
+    return () => window.clearTimeout(timer);
+  }, [activeSection, reviewFocusDay]);
 
   function clearCurrentPlanningArtifacts() {
     setDetectedConflicts([]);
@@ -1013,7 +1116,7 @@ export default function Home() {
         detectedConflicts,
         probeAnswers: probeAnswerList,
         learnedPreferences: activeLearnedPreferences,
-        assumptions: assumptions.filter((assumption) => assumption.status !== "Rejected"),
+        assumptions: plannerAssumptions,
         transportAssumptions: usefulTransportAssumptions,
         accommodationAssumptions: usefulAccommodationAssumptions,
         costAssumptions: usefulCostAssumptions,
@@ -1082,26 +1185,23 @@ export default function Home() {
       return;
     }
 
-    openWorkflowSection("assumptions");
+    openWorkflowSection("learned");
+  }
+
+  function resetGeneratedPlanAfterProfileChange() {
+    setItinerary(null);
+    setWarnings([]);
+    setSelectedOptionId(null);
+
+    if (workflowStep === "itinerary" || workflowStep === "feasibility") {
+      setWorkflowStep("learned");
+      setActiveSection("learned");
+    }
   }
 
   function handleAssumptionStatusChange(id: string, status: Assumption["status"]) {
     setAssumptions((current) => current.map((assumption) => (assumption.id === id ? { ...assumption, status } : assumption)));
-  }
-
-  function handleAssumptionValueChange(id: string, value: string) {
-    setAssumptions((current) =>
-      current.map((assumption) =>
-        assumption.id === id
-          ? {
-              ...assumption,
-              value,
-              source: "User",
-              status: "Edited"
-            }
-          : assumption
-      )
-    );
+    resetGeneratedPlanAfterProfileChange();
   }
 
   function handleLearnedPreferenceValueChange(id: string, value: string) {
@@ -1116,14 +1216,7 @@ export default function Home() {
           : preference
       )
     );
-    setItinerary(null);
-    setWarnings([]);
-    setSelectedOptionId(null);
-
-    if (workflowStep === "itinerary" || workflowStep === "feasibility") {
-      setWorkflowStep("learned");
-      setActiveSection("learned");
-    }
+    resetGeneratedPlanAfterProfileChange();
   }
 
   function updatePreferenceControl(id: string, update: Partial<PreferenceControl>) {
@@ -1138,6 +1231,7 @@ export default function Home() {
         }
       };
     });
+    resetGeneratedPlanAfterProfileChange();
   }
 
   const sectionComplete: Record<FlowSection, boolean> = {
@@ -1154,9 +1248,9 @@ export default function Home() {
     const status = sectionStatus(section, workflowStep, activeSection, sectionComplete[section]);
     return status === "current" ? copy.current : status === "completed" ? copy.completed : copy.waiting;
   };
-  const acceptedCount = assumptions.filter((assumption) => assumption.status === "Accepted" || assumption.status === "Edited").length;
+  const acceptedCount = plannerAssumptions.filter((assumption) => assumption.status === "Accepted" || assumption.status === "Edited").length;
   const rejectedCount = assumptions.filter((assumption) => assumption.status === "Rejected").length;
-  const inferredCount = assumptions.filter((assumption) => assumption.status === "Pending").length;
+  const inferredCount = plannerAssumptions.filter((assumption) => assumption.status === "Pending").length;
   const currentProbe = detectedConflicts.find((conflict) => !probeAnswers[conflict.id]);
   const visiblePreferenceRows = learnedPreferences.length > 0 ? learnedPreferences : [];
   const composerPrimaryLabel = loadingStage === "itinerary"
@@ -1169,7 +1263,7 @@ export default function Home() {
           ? copy.probesTitle
           : !sectionComplete.learned
             ? copy.learnPreferences
-            : copy.reviewAssumptions;
+            : copy.learnedTitle;
   const processItems: Array<{ key: FlowSection; title: string; body: string; done: boolean }> = [
     { key: "prompt", title: copy.promptTitle, body: prompt.trim() ? prompt : labels.waitingPrompt, done: sectionComplete.prompt },
     {
@@ -1195,10 +1289,13 @@ export default function Home() {
       done: sectionComplete.probes
     },
     {
-      key: "assumptions",
-      title: copy.assumptionsTitle,
-      body: assumptions.length ? `${acceptedCount} ${labels.confirmed} - ${inferredCount} ${labels.inferred}` : copy.waiting,
-      done: sectionComplete.assumptions
+      key: "learned",
+      title: copy.learnedTitle,
+      body:
+        learnedPreferences.length || assumptions.length
+          ? `${activeLearnedPreferences.length} ${copy.activePreferenceCount.toLowerCase()} - ${acceptedCount + inferredCount} ${copy.assumptionsReadySummary}`
+          : copy.waiting,
+      done: sectionComplete.learned && sectionComplete.assumptions
     },
     {
       key: "itinerary",
@@ -1217,13 +1314,95 @@ export default function Home() {
     0,
     processItems.findIndex((item) => item.key === activeSection)
   );
-  const promptStats = {
-    assumptions:
-      assumptions.length + usefulTransportAssumptions.length + usefulAccommodationAssumptions.length + usefulCostAssumptions.length,
-    missing: Math.max(0, detectedConflicts.length - probeAnswerList.length) + rejectedCount,
-    highImpact: critiques.filter((critique) => critique.impact === "High").length,
-    memory: memory.preferences.length
-  };
+  const missingConflicts = detectedConflicts.filter((conflict) => !probeAnswers[conflict.id]);
+  const visibleAssumptionIds = new Set(plannerAssumptions.map((assumption) => assumption.id));
+  const highImpactCritiques = critiques.filter(
+    (critique) => critique.impact === "High" && Boolean(critique.assumptionId && visibleAssumptionIds.has(critique.assumptionId))
+  );
+  const highImpactWarnings = warnings.filter((warning) => warning.impact === "High");
+  const highImpactItems = [
+    ...highImpactCritiques.map((critique) => ({
+      id: critique.id,
+      title: `${labels.categoryLabels[critique.category]}: ${critique.issue}`,
+      detail: critique.recommendedQuestion,
+      status: `${labels.impactLabels[critique.impact]} / ${copy.unresolvedStatus}`,
+      onSelect: () => openReviewTarget(`planning-consequence-${critique.assumptionId}`)
+    })),
+    ...highImpactWarnings.map((warning) => ({
+      id: warning.id,
+      title: `${labels.warningTypeLabels[warning.type]}: ${warning.message}`,
+      detail: warning.recommendation,
+      status: labels.impactLabels[warning.impact],
+      onSelect: () => openReviewTarget(`feasibility-warning-${warning.id}`, "feasibility")
+    }))
+  ];
+  const firstRejectedAssumption = assumptions.find((assumption) => assumption.status === "Rejected");
+  const promptChips: PromptStatusChip[] = [
+    {
+      id: "planning-consequences",
+      label: `${plannerAssumptions.length} ${labels.assumptionsInferred}`,
+      title: copy.chipAssumptionsTitle,
+      emptyText: copy.chipNoItems,
+      clickHint: copy.chipClickHint,
+      onClick: () => openReviewTarget(plannerAssumptions[0] ? `planning-consequence-${plannerAssumptions[0].id}` : "workflow-learned"),
+      items: plannerAssumptions.map((assumption) => ({
+        id: assumption.id,
+        title: `${labels.categoryLabels[assumption.category]}: ${assumption.value}`,
+        detail: assumption.rationale,
+        status: labels.assumptionStatusLabels[assumption.status],
+        onSelect: () => openReviewTarget(`planning-consequence-${assumption.id}`)
+      }))
+    },
+    {
+      id: "missing-preferences",
+      label: `${missingConflicts.length + rejectedCount} ${labels.missingPreferences}`,
+      title: copy.chipMissingTitle,
+      emptyText: copy.chipNoItems,
+      clickHint: copy.chipClickHint,
+      onClick: () =>
+        openReviewTarget(
+          missingConflicts.length > 0 ? "workflow-probes" : firstRejectedAssumption
+            ? `planning-consequence-${firstRejectedAssumption.id}`
+            : "workflow-learned",
+          missingConflicts.length > 0 ? "probes" : "learned"
+        ),
+      items: [
+        ...missingConflicts.map((conflict) => ({
+          id: conflict.id,
+          title: conflict.title,
+          detail: conflict.hiddenPreference,
+          status: copy.unanswered,
+          onSelect: () => openReviewTarget("workflow-probes", "probes")
+        })),
+        ...assumptions
+          .filter((assumption) => assumption.status === "Rejected")
+          .map((assumption) => ({
+            id: assumption.id,
+            title: `${labels.categoryLabels[assumption.category]}: ${assumption.value}`,
+            detail: assumption.rationale,
+            status: labels.assumptionStatusLabels[assumption.status],
+            onSelect: () => openReviewTarget(`planning-consequence-${assumption.id}`)
+          }))
+      ]
+    },
+    {
+      id: "high-impact",
+      label: `${highImpactItems.length} ${labels.highImpactUnresolved}`,
+      title: copy.chipHighImpactTitle,
+      emptyText: copy.chipNoItems,
+      clickHint: copy.chipClickHint,
+      onClick: () =>
+        openReviewTarget(
+          highImpactItems[0]?.id && highImpactWarnings.some((warning) => warning.id === highImpactItems[0].id)
+            ? `feasibility-warning-${highImpactItems[0].id}`
+            : highImpactCritiques[0]?.assumptionId
+              ? `planning-consequence-${highImpactCritiques[0].assumptionId}`
+              : "evaluation-signals-panel",
+          highImpactItems[0]?.id && highImpactWarnings.some((warning) => warning.id === highImpactItems[0].id) ? "feasibility" : "learned"
+        ),
+      items: highImpactItems
+    }
+  ];
 
   return (
     <main className="min-h-screen p-3 pb-32 text-slate-950 sm:p-4 sm:pb-32 lg:p-5 lg:pb-32">
@@ -1241,15 +1420,15 @@ export default function Home() {
         <div className="mx-auto flex max-w-full rounded-full border border-slate-200 bg-white/92 p-1 shadow-[0_16px_44px_rgba(26,35,67,0.1)] backdrop-blur">
           <button
             type="button"
-            onClick={() => openWorkflowSection("assumptions")}
+            onClick={() => openWorkflowSection("learned")}
             className={`flex h-10 min-w-[150px] items-center justify-center gap-2 whitespace-nowrap rounded-full px-4 text-sm font-black transition ${
-              activeSection === "assumptions" || activeSection === "probes"
+              activeSection !== "itinerary"
                 ? "bg-violet-600 text-white shadow-sm"
                 : "text-slate-600 hover:bg-slate-50"
             }`}
           >
             <ShieldCheck className="size-4" />
-            {copy.reviewAssumptions}
+            {labels.assumptionsView}
           </button>
           <button
             type="button"
@@ -1259,7 +1438,7 @@ export default function Home() {
             }`}
           >
             <Route className="size-4" />
-            {labels.mapTitle}
+            {labels.canvasView}
           </button>
         </div>
 
@@ -1316,6 +1495,31 @@ export default function Home() {
         </div>
       </header>
 
+      {activeSection === "itinerary" ? (
+        <div className="mx-auto mt-4 max-w-[1600px]">
+          <ItineraryCanvas
+            itinerary={itinerary}
+            warnings={warnings}
+            assumptions={assumptions}
+            selectedOptionId={selectedOptionId}
+            onSelectOption={setSelectedOptionId}
+            planning={loadingStage === "itinerary"}
+            labels={labels}
+            mode="map"
+            onOpenReview={openReviewPlanning}
+          />
+
+          {error ? (
+            <div className="mt-4 flex items-start gap-3 rounded-[8px] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+              <div>
+                <p className="font-semibold">{copy.errorTitle}</p>
+                <p className="mt-1 leading-5">{error}</p>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : (
       <div className="mx-auto mt-4 grid max-w-[1600px] gap-4 xl:grid-cols-[330px_minmax(0,1fr)_340px]">
         <aside className="space-y-3 xl:sticky xl:top-4 xl:self-start">
           <Panel title={copy.preferenceHistory} eyebrow={copy.originalPrompt} icon={<Sparkles className="size-4" />}>
@@ -1340,9 +1544,7 @@ export default function Home() {
                     >
                       {(preferenceControls[preference.id] || defaultPreferenceControl()).state === "ignored"
                         ? copy.ignoredPreference
-                        : (preferenceControls[preference.id] || defaultPreferenceControl()).state === "locked"
-                          ? copy.lockedPreference
-                          : copy.activePreference}
+                        : copy.activePreference}
                     </span>
                   </div>
                 </div>
@@ -1393,11 +1595,11 @@ export default function Home() {
               <div className="rounded-[8px] border border-indigo-100 bg-indigo-50/70 p-3">
                 <p className="text-sm font-black text-indigo-950">{copy.assumptionsTitle}</p>
                 <p className="mt-2 text-xs font-semibold leading-5 text-indigo-900/75">
-                  {acceptedCount} {labels.confirmed} / {inferredCount} {copy.reviewLater} / {rejectedCount} {copy.excludeAssumption}
+                  {acceptedCount} {copy.usedInPlan} / {inferredCount} {copy.reviewLater} / {rejectedCount} {copy.excludedFromPlan}
                 </p>
                 <button
                   type="button"
-                  onClick={() => openWorkflowSection("assumptions")}
+                  onClick={() => openWorkflowSection("learned")}
                   className="mt-3 rounded-[8px] bg-violet-600 px-3 py-2 text-xs font-black text-white"
                 >
                   {copy.reviewAssumptions}
@@ -1445,6 +1647,7 @@ export default function Home() {
             onSelectOption={setSelectedOptionId}
             planning={loadingStage === "itinerary"}
             labels={labels}
+            mode="review"
           />
 
           {error ? (
@@ -1726,7 +1929,7 @@ export default function Home() {
             title={copy.learnedTitle}
             body={copy.learnedBody}
             icon={<CheckCircle2 className="size-4" />}
-            status={sectionStatus("learned", workflowStep, activeSection, sectionComplete.learned)}
+            status={sectionStatus("learned", workflowStep, activeSection, sectionComplete.learned && sectionComplete.assumptions)}
             statusLabel={statusLabel("learned")}
             activeSection={activeSection}
             onOpen={openWorkflowSection}
@@ -1735,23 +1938,45 @@ export default function Home() {
               <EmptyState title={copy.noLearned} />
             ) : (
               <div className="space-y-3">
-                <div className="rounded-[8px] border border-indigo-100 bg-indigo-50/70 p-3">
-                  <p className="text-sm font-black text-indigo-950">{copy.preferenceProfileHint}</p>
+                <div className="rounded-[8px] border border-indigo-100 bg-indigo-50/70 p-4">
+                  <p className="text-xs font-black uppercase text-indigo-600">{copy.learnedTitle}</p>
+                  <p className="mt-1 text-sm font-black text-indigo-950">{copy.preferenceProfileHint}</p>
+                  <div className="mt-3 grid gap-2 md:grid-cols-4">
+                    {[copy.profileFlowPrompt, copy.profileFlowProfile, copy.profileFlowConsequences, copy.profileFlowItinerary].map((step, index) => (
+                      <div key={step} className="flex items-center gap-2 rounded-[8px] border border-white/70 bg-white/72 px-3 py-2 text-xs font-black text-indigo-900">
+                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-[10px] text-white">
+                          {index + 1}
+                        </span>
+                        <span>{step}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
+
                 <div className="grid gap-3">
                   {learnedPreferences.map((preference) => {
                     const control = preferenceControls[preference.id] || defaultPreferenceControl();
+                    const priority = effectivePreferencePriority(control);
                     const relatedInsight = hiddenPreferenceInsights.find((insight) => insight.learnedPreference?.id === preference.id);
                     const priorityDisabled = control.state === "ignored";
+                    const relatedConsequences = assumptions.filter((assumption) => assumption.category === preference.category);
+                    const activeRelatedCount =
+                      control.state === "ignored" ? 0 : relatedConsequences.filter((assumption) => assumption.status !== "Rejected").length;
+                    const showTransportImpact = preference.category === "transport" && usefulTransportAssumptions.length > 0;
+                    const showAccommodationImpact = preference.category === "accommodationArea" && usefulAccommodationAssumptions.length > 0;
+                    const showCostImpact = preference.category === "budget" && usefulCostAssumptions.length > 0;
+                    const hasLinkedConsequences =
+                      relatedConsequences.length > 0 || showTransportImpact || showAccommodationImpact || showCostImpact;
 
                     return (
                       <article
+                        id={`learned-preference-${preference.id}`}
                         key={preference.id}
                         className={`rounded-[8px] border bg-white p-4 shadow-sm ${
                           control.state === "ignored" ? "border-rose-200 bg-rose-50/45" : "border-slate-200"
                         }`}
                       >
-                        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
+                        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_270px]">
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-black text-slate-600">
@@ -1759,42 +1984,47 @@ export default function Home() {
                               </span>
                               <SourceBadge source={preference.source} labels={labels.sourceLabels} />
                               <span className={`rounded-full border px-2 py-1 text-[11px] font-black ${preferenceControlTone(control)}`}>
-                                {control.state === "ignored"
-                                  ? copy.ignoredPreference
-                                  : control.state === "locked"
-                                    ? copy.lockedPreference
-                                    : copy.activePreference}
+                                {control.state === "ignored" ? copy.ignoredPreference : copy.activePreference}
                               </span>
                               <span className="rounded-full border border-indigo-100 bg-indigo-50 px-2 py-1 text-[11px] font-black text-indigo-700">
-                                {control.priority === "primary"
+                                {priority === "primary"
                                   ? copy.primaryPriority
-                                  : control.priority === "low"
+                                  : priority === "low"
                                     ? copy.lowPriority
                                     : copy.normalPriority}
                               </span>
                             </div>
-                            <h3 className="mt-3 text-base font-black text-slate-950">{preference.value}</h3>
-                            <label className="mt-3 block">
-                              <span className="text-[11px] font-black uppercase text-slate-400">{copy.preferenceDetail}</span>
-                              <textarea
-                                value={preference.value}
-                                onChange={(event) => handleLearnedPreferenceValueChange(preference.id, event.target.value)}
-                                rows={2}
-                                className="mt-1 min-h-16 w-full resize-y rounded-[8px] border border-slate-200 bg-white px-3 py-2 text-sm font-semibold leading-6 text-slate-900 outline-none transition focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100"
-                              />
-                              <span className="mt-1 block text-xs font-semibold leading-5 text-slate-500">{copy.preferenceDetailHint}</span>
-                            </label>
-                            <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{preference.planningImpact}</p>
-                            <div className="mt-3 grid gap-2 md:grid-cols-2">
-                              <div className="rounded-[8px] border border-slate-100 bg-slate-50 p-3">
+
+                            <h3 className="mt-3 text-lg font-black leading-7 text-slate-950">{preference.value}</h3>
+
+                            <div className="mt-3 rounded-[8px] border border-slate-100 bg-slate-50 p-3">
+                              <p className="text-[11px] font-black uppercase text-slate-400">{copy.inferredFrom}</p>
+                              <p className="mt-1 text-sm font-semibold leading-6 text-slate-600">
+                                {relatedInsight?.selectedAnswer?.planningImpact || relatedInsight?.whyItMatters || preference.planningImpact}
+                              </p>
+                            </div>
+
+                            <div className="mt-3 grid gap-2">
+                              <div className="rounded-[8px] border border-slate-100 bg-white p-3">
                                 <p className="text-[11px] font-black uppercase text-slate-400">{copy.modelConfidence}</p>
                                 <p className="mt-1 text-sm font-black text-slate-950">{Math.round(preference.confidence * 100)}%</p>
                               </div>
-                              <div className="rounded-[8px] border border-slate-100 bg-slate-50 p-3">
-                                <p className="text-[11px] font-black uppercase text-slate-400">{copy.whatChanges}</p>
-                                <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">{copy.plannerImpactNote}</p>
-                              </div>
                             </div>
+
+                            <details className="mt-3 rounded-[8px] border border-slate-100 bg-slate-50 p-3">
+                              <summary className="cursor-pointer text-xs font-black text-indigo-700">{copy.editPreference}</summary>
+                              <label className="mt-3 block">
+                                <span className="text-[11px] font-black uppercase text-slate-400">{copy.preferenceDetail}</span>
+                                <textarea
+                                  value={preference.value}
+                                  onChange={(event) => handleLearnedPreferenceValueChange(preference.id, event.target.value)}
+                                  rows={2}
+                                  className="mt-1 min-h-16 w-full resize-y rounded-[8px] border border-slate-200 bg-white px-3 py-2 text-sm font-semibold leading-6 text-slate-900 outline-none transition focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100"
+                                />
+                                <span className="mt-1 block text-xs font-semibold leading-5 text-slate-500">{copy.preferenceDetailHint}</span>
+                              </label>
+                            </details>
+
                             {relatedInsight ? (
                               <details className="mt-3 rounded-[8px] border border-slate-100 bg-slate-50 p-3">
                                 <summary className="cursor-pointer text-xs font-black text-indigo-700">{copy.agentEvidence}</summary>
@@ -1808,287 +2038,257 @@ export default function Home() {
 
                           <div className="rounded-[8px] border border-slate-200 bg-white p-3">
                             <p className="text-[11px] font-black uppercase text-slate-400">{copy.userControl}</p>
-                            <div className="mt-3 grid gap-2">
+                            <div className="mt-3 grid grid-cols-2 gap-2">
                               <button
                                 type="button"
-                                onClick={() =>
-                                  updatePreferenceControl(preference.id, {
-                                    state: control.state === "locked" ? "active" : "locked"
-                                  })
-                                }
+                                aria-pressed={control.state !== "ignored"}
+                                onClick={() => updatePreferenceControl(preference.id, { state: "active" })}
                                 className={`rounded-[8px] border px-3 py-2 text-sm font-black transition ${
-                                  control.state === "locked"
-                                    ? "border-indigo-500 bg-indigo-600 text-white"
-                                    : "border-slate-200 bg-white text-slate-700 hover:border-indigo-200 hover:bg-indigo-50"
+                                  control.state !== "ignored"
+                                    ? "border-emerald-500 bg-emerald-600 text-white"
+                                    : "border-slate-200 bg-white text-slate-600 hover:bg-emerald-50"
                                 }`}
                               >
-                                {control.state === "locked" ? copy.unlockPreference : copy.lockPreference}
+                                {copy.activePreference}
                               </button>
                               <button
                                 type="button"
-                                onClick={() =>
-                                  updatePreferenceControl(preference.id, {
-                                    state: control.state === "ignored" ? "active" : "ignored"
-                                  })
-                                }
+                                aria-pressed={control.state === "ignored"}
+                                onClick={() => updatePreferenceControl(preference.id, { state: "ignored" })}
                                 className={`rounded-[8px] border px-3 py-2 text-sm font-black transition ${
                                   control.state === "ignored"
-                                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                                    : "border-slate-200 bg-white text-slate-700 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
-                                }`}
-                              >
-                                {control.state === "ignored" ? copy.restorePreference : copy.ignorePreference}
-                              </button>
-                              <div className="grid grid-cols-3 gap-2">
-                                <button
-                                  type="button"
-                                  disabled={priorityDisabled}
-                                  onClick={() => updatePreferenceControl(preference.id, { priority: "primary" })}
-                                  className={`rounded-[8px] border px-2 py-2 text-xs font-black transition ${
-                                    priorityDisabled
-                                      ? "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300"
-                                      : control.priority === "primary"
-                                      ? "border-violet-500 bg-violet-600 text-white"
-                                      : "border-slate-200 bg-white text-slate-600 hover:bg-violet-50"
-                                  }`}
-                                >
-                                  {copy.makePrimary}
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={priorityDisabled}
-                                  onClick={() => updatePreferenceControl(preference.id, { priority: "normal" })}
-                                  className={`rounded-[8px] border px-2 py-2 text-xs font-black transition ${
-                                    priorityDisabled
-                                      ? "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300"
-                                      : control.priority === "normal"
-                                      ? "border-emerald-500 bg-emerald-600 text-white"
-                                      : "border-slate-200 bg-white text-slate-600 hover:bg-emerald-50"
-                                  }`}
-                                >
-                                  {copy.normalPriority}
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={priorityDisabled}
-                                  onClick={() => updatePreferenceControl(preference.id, { priority: "low" })}
-                                  className={`rounded-[8px] border px-2 py-2 text-xs font-black transition ${
-                                    priorityDisabled
-                                      ? "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300"
-                                      : control.priority === "low"
-                                      ? "border-slate-400 bg-slate-700 text-white"
-                                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                                  }`}
-                                >
-                                  {copy.lowerPriority}
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setWorkflowStep("assumptions");
-                    openWorkflowSection("assumptions");
-                  }}
-                  className="rounded-[8px] border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700"
-                >
-                  {copy.reviewAssumptions}
-                </button>
-              </div>
-            )}
-          </WorkflowSection>
-
-          <WorkflowSection
-            id="assumptions"
-            title={copy.assumptionsTitle}
-            body={copy.assumptionsBody}
-            icon={<ShieldCheck className="size-4" />}
-            status={sectionStatus("assumptions", workflowStep, activeSection, sectionComplete.assumptions)}
-            statusLabel={statusLabel("assumptions")}
-            activeSection={activeSection}
-            onOpen={openWorkflowSection}
-          >
-            {assumptions.length === 0 ? (
-              <EmptyState title={copy.noAssumptions} />
-            ) : (
-              <div className="space-y-4">
-                <div className="grid gap-2 md:grid-cols-3">
-                  <div className="rounded-[8px] border border-emerald-100 bg-emerald-50 p-3">
-                    <p className="text-[11px] font-black uppercase text-emerald-700">{labels.confirmed}</p>
-                    <p className="mt-1 text-2xl font-black text-emerald-950">{acceptedCount}</p>
-                  </div>
-                  <div className="rounded-[8px] border border-amber-100 bg-amber-50 p-3">
-                    <p className="text-[11px] font-black uppercase text-amber-700">{copy.reviewLater}</p>
-                    <p className="mt-1 text-2xl font-black text-amber-950">{inferredCount}</p>
-                  </div>
-                  <div className="rounded-[8px] border border-rose-100 bg-rose-50 p-3">
-                    <p className="text-[11px] font-black uppercase text-rose-700">{copy.excludeAssumption}</p>
-                    <p className="mt-1 text-2xl font-black text-rose-950">{rejectedCount}</p>
-                  </div>
-                </div>
-
-                <div className="rounded-[8px] border border-indigo-100 bg-indigo-50/70 p-3">
-                  <p className="text-sm font-black text-indigo-950">
-                    {acceptedCount + inferredCount} {copy.assumptionsReadySummary}
-                  </p>
-                  <p className="mt-1 text-xs font-semibold leading-5 text-indigo-900/70">{copy.consequencesHint}</p>
-                  <p className="mt-2 text-xs font-semibold leading-5 text-indigo-900/70">{copy.assumptionHint}</p>
-                </div>
-
-                <div className="grid gap-3">
-                  {assumptions.map((assumption) => {
-                    const isAccepted = assumption.status === "Accepted" || assumption.status === "Edited";
-                    const isRejected = assumption.status === "Rejected";
-                    const isPending = assumption.status === "Pending";
-
-                    return (
-                      <article
-                        key={assumption.id}
-                        className={`rounded-[8px] border bg-white p-4 shadow-sm transition ${
-                          isRejected
-                            ? "border-rose-200 bg-rose-50/45"
-                            : isAccepted
-                              ? "border-emerald-200 bg-emerald-50/35"
-                              : "border-slate-200"
-                        }`}
-                      >
-                        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="text-sm font-black text-slate-950">{labels.categoryLabels[assumption.category]}</p>
-                              <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-bold text-slate-500">
-                                {Math.round(assumption.confidence * 100)}% {copy.confidence}
-                              </span>
-                              <span
-                                className={`rounded-full border px-2 py-0.5 text-[11px] font-bold ${
-                                  isRejected
-                                    ? "border-rose-200 bg-white text-rose-700"
-                                    : isAccepted
-                                      ? "border-emerald-200 bg-white text-emerald-700"
-                                      : "border-amber-200 bg-white text-amber-700"
-                                }`}
-                              >
-                                {labels.assumptionStatusLabels[assumption.status]}
-                              </span>
-                            </div>
-
-                            <label className="mt-4 block">
-                              <span className="text-[11px] font-black uppercase text-slate-400">{copy.assumptionValue}</span>
-                              <textarea
-                                value={assumption.value}
-                                onChange={(event) => handleAssumptionValueChange(assumption.id, event.target.value)}
-                                rows={2}
-                                className="mt-1 min-h-20 w-full resize-y rounded-[8px] border border-slate-200 bg-white px-3 py-2 text-sm font-semibold leading-6 text-slate-900 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100"
-                              />
-                            </label>
-
-                            <div className="mt-3 rounded-[8px] border border-slate-100 bg-white/75 p-3">
-                              <p className="text-[11px] font-black uppercase text-slate-400">{copy.assumptionReason}</p>
-                              <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">{assumption.rationale}</p>
-                            </div>
-                          </div>
-
-                          <div className="rounded-[8px] border border-slate-200 bg-white p-3">
-                            <p className="text-[11px] font-black uppercase text-slate-400">{copy.assumptionDecision}</p>
-                            <div className="mt-3 grid gap-2" role="group" aria-label={copy.reviewAssumptions}>
-                              <button
-                                type="button"
-                                aria-pressed={isAccepted}
-                                onClick={() => handleAssumptionStatusChange(assumption.id, "Accepted")}
-                                className={`flex h-10 items-center justify-between rounded-[8px] border px-3 text-sm font-black transition ${
-                                  isAccepted
-                                    ? "border-emerald-500 bg-emerald-600 text-white shadow-sm"
-                                    : "border-slate-200 bg-white text-slate-600 hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700"
-                                }`}
-                              >
-                                <span>{copy.useAssumption}</span>
-                                {isAccepted ? <Check className="size-4" /> : null}
-                              </button>
-                              <button
-                                type="button"
-                                aria-pressed={isPending}
-                                onClick={() => handleAssumptionStatusChange(assumption.id, "Pending")}
-                                className={`flex h-10 items-center justify-between rounded-[8px] border px-3 text-sm font-black transition ${
-                                  isPending
-                                    ? "border-amber-400 bg-amber-100 text-amber-800"
-                                    : "border-slate-200 bg-white text-slate-600 hover:border-amber-200 hover:bg-amber-50 hover:text-amber-700"
-                                }`}
-                              >
-                                <span>{copy.reviewLater}</span>
-                                {isPending ? <AlertTriangle className="size-4" /> : null}
-                              </button>
-                              <button
-                                type="button"
-                                aria-pressed={isRejected}
-                                onClick={() => handleAssumptionStatusChange(assumption.id, "Rejected")}
-                                className={`flex h-10 items-center justify-between rounded-[8px] border px-3 text-sm font-black transition ${
-                                  isRejected
-                                    ? "border-rose-500 bg-rose-600 text-white shadow-sm"
+                                    ? "border-rose-500 bg-rose-600 text-white"
                                     : "border-slate-200 bg-white text-slate-600 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
                                 }`}
                               >
-                                <span>{copy.excludeAssumption}</span>
-                                {isRejected ? <X className="size-4" /> : null}
+                                {copy.ignorePreference}
+                              </button>
+                            </div>
+                            <p className="mt-4 text-[11px] font-black uppercase text-slate-400">{copy.planningImpact}</p>
+                            <div className="mt-2 grid grid-cols-3 gap-2">
+                              <button
+                                type="button"
+                                disabled={priorityDisabled}
+                                onClick={() => updatePreferenceControl(preference.id, { state: "active", priority: "primary" })}
+                                className={`rounded-[8px] border px-2 py-2 text-xs font-black transition ${
+                                  priorityDisabled
+                                    ? "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300"
+                                    : priority === "primary"
+                                      ? "border-violet-500 bg-violet-600 text-white"
+                                      : "border-slate-200 bg-white text-slate-600 hover:bg-violet-50"
+                                }`}
+                              >
+                                {copy.makePrimary}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={priorityDisabled}
+                                onClick={() => updatePreferenceControl(preference.id, { state: "active", priority: "normal" })}
+                                className={`rounded-[8px] border px-2 py-2 text-xs font-black transition ${
+                                  priorityDisabled
+                                    ? "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300"
+                                    : priority === "normal"
+                                      ? "border-emerald-500 bg-emerald-600 text-white"
+                                      : "border-slate-200 bg-white text-slate-600 hover:bg-emerald-50"
+                                }`}
+                              >
+                                {copy.normalPriority}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={priorityDisabled}
+                                onClick={() => updatePreferenceControl(preference.id, { state: "active", priority: "low" })}
+                                className={`rounded-[8px] border px-2 py-2 text-xs font-black transition ${
+                                  priorityDisabled
+                                    ? "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300"
+                                    : priority === "low"
+                                      ? "border-slate-400 bg-slate-700 text-white"
+                                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                                }`}
+                              >
+                                {copy.lowerPriority}
                               </button>
                             </div>
                           </div>
                         </div>
+
+                        <details className="mt-4 rounded-[8px] border border-indigo-100 bg-indigo-50/45 p-3">
+                          <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+                            <div>
+                              <p className="text-xs font-black uppercase text-indigo-600">{copy.assumptionsTitle}</p>
+                              <p className="mt-1 text-sm font-semibold text-indigo-950/75">
+                                {control.state === "ignored"
+                                  ? copy.noActiveConsequences
+                                  : `${activeRelatedCount} ${labels.assumptionsInferred}`}
+                              </p>
+                            </div>
+                            <ChevronDown className="size-4 shrink-0 text-indigo-600" />
+                          </summary>
+
+                          <div className="mt-3 space-y-3 border-t border-indigo-100 pt-3">
+                            <p className="text-xs font-semibold leading-5 text-indigo-950/70">{copy.consequencesHint}</p>
+                            {control.state === "ignored" ? (
+                              <div className="rounded-[8px] border border-rose-100 bg-white/80 p-3 text-xs font-black text-rose-700">
+                                {copy.noActiveConsequences}
+                              </div>
+                            ) : null}
+                            {!hasLinkedConsequences ? (
+                              <div className="rounded-[8px] border border-slate-200 bg-white p-3 text-xs font-semibold text-slate-500">
+                                {copy.noLinkedConsequences}
+                              </div>
+                            ) : null}
+
+                            {relatedConsequences.map((assumption) => {
+                              const isRejected = assumption.status === "Rejected";
+                              const isPending = assumption.status === "Pending";
+                              const isHighImpact = critiques.some(
+                                (critique) => critique.assumptionId === assumption.id && critique.impact === "High"
+                              );
+                              const isLowConfidence = assumption.confidence < 0.75;
+                              const controlsDisabled = control.state === "ignored";
+
+                              return (
+                                <div
+                                  id={`planning-consequence-${assumption.id}`}
+                                  key={assumption.id}
+                                  className={`scroll-mt-28 rounded-[8px] border p-3 shadow-sm transition ${
+                                    isRejected
+                                      ? "border-rose-200 bg-rose-50/70"
+                                      : controlsDisabled
+                                        ? "border-slate-200 bg-white/70 opacity-75"
+                                        : "border-slate-200 bg-white"
+                                  }`}
+                                >
+                                  <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
+                                    <div className="min-w-0">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span
+                                          className={`rounded-full border px-2 py-1 text-[11px] font-black ${
+                                            isRejected
+                                              ? "border-rose-200 bg-white text-rose-700"
+                                              : isPending
+                                                ? "border-amber-200 bg-white text-amber-700"
+                                                : "border-emerald-200 bg-white text-emerald-700"
+                                          }`}
+                                        >
+                                          {isRejected ? copy.excludedFromPlan : isPending ? copy.reviewLater : copy.usedInPlan}
+                                        </span>
+                                        <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-500">
+                                          {Math.round(assumption.confidence * 100)}% {copy.confidence}
+                                        </span>
+                                        {isLowConfidence ? (
+                                          <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-black text-amber-700">
+                                            {copy.lowConfidence}
+                                          </span>
+                                        ) : null}
+                                        {isHighImpact ? (
+                                          <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-black text-rose-700">
+                                            {copy.highImpact}
+                                          </span>
+                                        ) : null}
+                                        {assumption.category === "budget" ? (
+                                          <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-1 text-[11px] font-black text-violet-700">
+                                            {copy.mayAffectBudget}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                      <p className="mt-2 text-sm font-black leading-6 text-slate-950">{assumption.value}</p>
+                                      <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">{assumption.rationale}</p>
+                                    </div>
+
+                                    <div className="grid gap-2" role="group" aria-label={copy.assumptionDecision}>
+                                      <button
+                                        type="button"
+                                        disabled={controlsDisabled}
+                                        aria-pressed={!isRejected && !controlsDisabled}
+                                        onClick={() => handleAssumptionStatusChange(assumption.id, "Accepted")}
+                                        className={`flex h-10 items-center justify-between rounded-[8px] border px-3 text-sm font-black transition ${
+                                          controlsDisabled
+                                            ? "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300"
+                                            : !isRejected
+                                              ? "border-emerald-500 bg-emerald-600 text-white shadow-sm"
+                                              : "border-slate-200 bg-white text-slate-600 hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700"
+                                        }`}
+                                      >
+                                        <span>{copy.useAssumption}</span>
+                                        {!isRejected && !controlsDisabled ? <Check className="size-4" /> : null}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={controlsDisabled}
+                                        aria-pressed={isRejected && !controlsDisabled}
+                                        onClick={() => handleAssumptionStatusChange(assumption.id, "Rejected")}
+                                        className={`flex h-10 items-center justify-between rounded-[8px] border px-3 text-sm font-black transition ${
+                                          controlsDisabled
+                                            ? "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300"
+                                            : isRejected
+                                              ? "border-rose-500 bg-rose-600 text-white shadow-sm"
+                                              : "border-slate-200 bg-white text-slate-600 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                                        }`}
+                                      >
+                                        <span>{copy.excludeAssumption}</span>
+                                        {isRejected && !controlsDisabled ? <X className="size-4" /> : null}
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+
+                            {showTransportImpact ? (
+                              <div className="rounded-[8px] border border-slate-200 bg-white p-3">
+                                <p className="text-xs font-black uppercase text-slate-400">{labels.transportAssumptions}</p>
+                                <div className="mt-2 grid gap-2 md:grid-cols-2">
+                                  {usefulTransportAssumptions.map((item) => (
+                                    <div key={item.id} className="rounded-[8px] bg-slate-50 p-2 text-xs font-semibold text-slate-600">
+                                      <p className="font-black text-slate-900">
+                                        {item.from} - {item.to}
+                                      </p>
+                                      <p className="mt-1">
+                                        {item.mode} - {item.estimatedTravelTimeMinutes} {labels.minutes}
+                                      </p>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+
+                            {showAccommodationImpact ? (
+                              <div className="rounded-[8px] border border-slate-200 bg-white p-3">
+                                <p className="text-xs font-black uppercase text-slate-400">{labels.accommodationAssumptions}</p>
+                                <div className="mt-2 grid gap-2 md:grid-cols-2">
+                                  {usefulAccommodationAssumptions.map((item) => (
+                                    <div key={item.id} className="rounded-[8px] bg-slate-50 p-2 text-xs font-semibold text-slate-600">
+                                      <p className="font-black text-slate-900">
+                                        {labels.night} {item.night}: {item.area}
+                                      </p>
+                                      <p className="mt-1">{item.accommodationStyle}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+
+                            {showCostImpact ? (
+                              <div className="rounded-[8px] border border-slate-200 bg-white p-3">
+                                <p className="text-xs font-black uppercase text-slate-400">{labels.costAssumptions}</p>
+                                <div className="mt-2 grid gap-2 md:grid-cols-2">
+                                  {usefulCostAssumptions.map((item) => (
+                                    <div key={item.id} className="rounded-[8px] bg-slate-50 p-2 text-xs font-semibold text-slate-600">
+                                      <p className="font-black text-slate-900">{labels.costCategoryLabels[item.category]}</p>
+                                      <p className="mt-1">
+                                        {labels.perDay}: EUR {item.perDayEstimateEur} - {labels.total}: EUR {item.totalEstimateEur}
+                                      </p>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        </details>
                       </article>
                     );
                   })}
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-3">
-                  {usefulTransportAssumptions.length > 0 ? (
-                    <Panel title={labels.transportAssumptions} icon={<Route className="size-4" />}>
-                      <div className="space-y-2">
-                        {usefulTransportAssumptions.map((item) => (
-                          <div key={item.id} className="rounded-[8px] bg-slate-50 p-2 text-xs font-semibold text-slate-600">
-                            <p className="font-black text-slate-900">
-                              {item.from} - {item.to}
-                            </p>
-                            <p className="mt-1">
-                              {item.mode} - {item.estimatedTravelTimeMinutes} {labels.minutes}
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    </Panel>
-                  ) : null}
-                  {usefulAccommodationAssumptions.length > 0 ? (
-                    <Panel title={labels.accommodationAssumptions} icon={<Database className="size-4" />}>
-                      <div className="space-y-2">
-                        {usefulAccommodationAssumptions.map((item) => (
-                          <div key={item.id} className="rounded-[8px] bg-slate-50 p-2 text-xs font-semibold text-slate-600">
-                            <p className="font-black text-slate-900">
-                              {labels.night} {item.night}: {item.area}
-                            </p>
-                            <p className="mt-1">{item.accommodationStyle}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </Panel>
-                  ) : null}
-                  {usefulCostAssumptions.length > 0 ? (
-                    <Panel title={labels.costAssumptions} icon={<Sparkles className="size-4" />}>
-                      <div className="space-y-2">
-                        {usefulCostAssumptions.map((item) => (
-                          <div key={item.id} className="rounded-[8px] bg-slate-50 p-2 text-xs font-semibold text-slate-600">
-                            <p className="font-black text-slate-900">{labels.costCategoryLabels[item.category]}</p>
-                            <p className="mt-1">
-                              {labels.perDay}: EUR {item.perDayEstimateEur} - {labels.total}: EUR {item.totalEstimateEur}
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    </Panel>
-                  ) : null}
                 </div>
 
                 <div className="flex justify-end">
@@ -2136,7 +2336,11 @@ export default function Home() {
             ) : (
               <div className="grid gap-3 md:grid-cols-2">
                 {warnings.map((warning) => (
-                  <div key={warning.id} className="rounded-[8px] border border-slate-200 bg-white p-3">
+                  <div
+                    id={`feasibility-warning-${warning.id}`}
+                    key={warning.id}
+                    className="scroll-mt-28 rounded-[8px] border border-slate-200 bg-white p-3"
+                  >
                     <div className="flex items-start justify-between gap-2">
                       <p className="text-sm font-black text-slate-950">{warning.message}</p>
                       <ImpactBadge impact={warning.impact} labels={labels.impactLabels} />
@@ -2153,9 +2357,9 @@ export default function Home() {
           <Panel title={labels.statusTitle} eyebrow={labels.liveLegend} icon={<ShieldCheck className="size-4" />}>
             <div className="space-y-2">
               {[
-                { label: labels.confirmed, value: acceptedCount, color: "bg-emerald-500" },
-                { label: labels.inferred, value: inferredCount, color: "bg-orange-500" },
-                { label: labels.missing, value: rejectedCount, color: "bg-rose-500" }
+                { label: copy.usedInPlan, value: acceptedCount, color: "bg-emerald-500" },
+                { label: copy.reviewLater, value: inferredCount, color: "bg-orange-500" },
+                { label: copy.excludedFromPlan, value: rejectedCount, color: "bg-rose-500" }
               ].map((item) => (
                 <div key={item.label} className="flex items-center justify-between rounded-[8px] bg-slate-50 px-3 py-2">
                   <div className="flex items-center gap-2">
@@ -2221,8 +2425,9 @@ export default function Home() {
             </div>
           </Panel>
 
-          <Panel title={copy.evaluationSignals} eyebrow={copy.checkpointMetrics} icon={<SearchCheck className="size-4" />}>
-            <div className="space-y-2">
+          <div id="evaluation-signals-panel" className="scroll-mt-28">
+            <Panel title={copy.evaluationSignals} eyebrow={copy.checkpointMetrics} icon={<SearchCheck className="size-4" />}>
+              <div className="space-y-2">
               <div className="rounded-[8px] bg-slate-50 p-3">
                 <p className="text-[11px] font-black uppercase text-slate-400">{copy.checkpointDecision}</p>
                 <p className="mt-1 text-sm font-black text-slate-950">
@@ -2273,21 +2478,25 @@ export default function Home() {
                 </div>
               ) : null}
               <p className="text-xs font-semibold leading-5 text-slate-500">{copy.noGroundTruth}</p>
-            </div>
-          </Panel>
+              </div>
+            </Panel>
+          </div>
 
-          <Panel title={labels.memoryStatusTitle} eyebrow={memoryStatus?.message || labels.memoryEmpty} icon={<Database className="size-4" />}>
-            <div className="rounded-[8px] bg-slate-50 p-3">
-              <p className="text-xs font-black text-slate-500">
-                {memoryStatus?.used ? labels.basedOnMemory : labels.freshRequest}
-              </p>
-              <p className="mt-1 text-sm font-black text-slate-950">
-                {memory.preferences.length} {labels.memoryCountLabel}
-              </p>
-            </div>
-          </Panel>
+          <div id="memory-status-panel" className="scroll-mt-28">
+            <Panel title={labels.memoryStatusTitle} eyebrow={memoryStatus?.message || labels.memoryEmpty} icon={<Database className="size-4" />}>
+              <div className="rounded-[8px] bg-slate-50 p-3">
+                <p className="text-xs font-black text-slate-500">
+                  {memoryStatus?.used ? labels.basedOnMemory : labels.freshRequest}
+                </p>
+                <p className="mt-1 text-sm font-black text-slate-950">
+                  {memory.preferences.length} {labels.memoryCountLabel}
+                </p>
+              </div>
+            </Panel>
+          </div>
         </aside>
       </div>
+      )}
 
       <PromptComposer
         prompt={prompt}
@@ -2301,15 +2510,11 @@ export default function Home() {
           !nonPlanningPrompt &&
           loadingStage === null
         }
-        stats={promptStats}
+        chips={promptChips}
         labels={{
           promptPlaceholder: copy.promptPlaceholder,
           promptTooShort: copy.promptTooShort,
           generate: composerPrimaryLabel,
-          assumptionsInferred: labels.assumptionsInferred,
-          missingPreferences: labels.missingPreferences,
-          highImpactUnresolved: labels.highImpactUnresolved,
-          memoryApplied: labels.memoryApplied,
           examplesLabel: copy.promptExamplesLabel,
           examples: copy.promptExamples
         }}

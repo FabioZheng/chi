@@ -7,6 +7,7 @@
   --panel: #ffffff;
   --panel-border: #e4e7ef;
   --muted: #697386;
+  --app-font: "Geist", "Inter", system-ui, sans-serif;
 }
 
 * {
@@ -21,7 +22,9 @@ body {
     radial-gradient(circle at 84% 16%, rgba(20, 184, 166, 0.1), transparent 24%),
     linear-gradient(180deg, #f9fbff 0%, var(--background) 54%, #eef2f7 100%);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--app-font);
+  font-synthesis-weight: none;
+  text-rendering: geometricPrecision;
 }
 
 button,
@@ -33,6 +36,20 @@ select {
 
 button {
   letter-spacing: 0;
+}
+
+@layer utilities {
+  .font-black {
+    font-weight: 650;
+  }
+
+  .font-bold {
+    font-weight: 580;
+  }
+
+  .font-semibold {
+    font-weight: 500;
+  }
 }
 
 .planner-scrollbar {
@@ -61,26 +78,28 @@ button {
   height: 100%;
   width: 100%;
   background: #d9ecf2;
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--app-font);
 }
 
 .leaflet-itinerary-map .leaflet-control-zoom {
   border: 1px solid #d7dce7;
   border-radius: 8px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.16);
   overflow: hidden;
 }
 
 .leaflet-itinerary-map .leaflet-control-zoom a {
+  background: rgba(255, 255, 255, 0.96);
   border-color: #e2e8f0;
   color: #334155;
+  font-weight: 650;
 }
 
 .leaflet-itinerary-map .leaflet-control-attribution {
   border-radius: 8px 0 0 0;
   color: #64748b;
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .itinerary-leaflet-marker-shell {
@@ -90,22 +109,235 @@ button {
 
 .itinerary-leaflet-marker {
   align-items: center;
-  background: #ffffff;
-  border: 4px solid var(--marker-color, #7c3aed);
+  background:
+    radial-gradient(circle at 32% 24%, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.52) 38%, transparent 39%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(241, 245, 249, 0.88));
+  border: 3px solid var(--marker-color, #7c3aed);
   border-radius: 999px;
-  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.28);
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.92),
+    0 12px 28px rgba(15, 23, 42, 0.26);
   color: var(--marker-color, #7c3aed);
   display: flex;
-  font-size: 12px;
-  font-weight: 900;
-  height: 36px;
+  font-size: 13px;
+  font-weight: 650;
+  height: 44px;
   justify-content: center;
-  width: 36px;
+  position: relative;
+  transition:
+    box-shadow 160ms ease,
+    transform 160ms ease;
+  width: 44px;
+}
+
+.itinerary-leaflet-marker::after {
+  background: var(--marker-color, #7c3aed);
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  bottom: 2px;
+  content: "";
+  height: 9px;
+  position: absolute;
+  right: 2px;
+  width: 9px;
+}
+
+.itinerary-marker-number {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.82);
+  border-radius: 999px;
+  display: flex;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+
+.itinerary-leaflet-marker-label {
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 999px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.16);
+  color: #0f172a;
+  font-size: 10px;
+  font-weight: 600;
+  left: 50%;
+  max-width: 104px;
+  overflow: hidden;
+  padding: 2px 7px;
+  position: absolute;
+  text-overflow: ellipsis;
+  top: 45px;
+  transform: translateX(-50%);
+  white-space: nowrap;
 }
 
 .itinerary-leaflet-marker.is-selected {
   box-shadow:
-    0 0 0 5px #ffffff,
-    0 16px 34px rgba(15, 23, 42, 0.32);
-  transform: scale(1.08);
+    0 0 0 5px rgba(255, 255, 255, 0.96),
+    0 0 0 9px color-mix(in srgb, var(--marker-color, #7c3aed) 22%, transparent),
+    0 18px 38px rgba(15, 23, 42, 0.34);
+  transform: scale(1.12);
+}
+
+.itinerary-leaflet-marker.is-base {
+  border-radius: 12px;
+  color: #059669;
+}
+
+.itinerary-leaflet-marker.is-base::after {
+  background: #059669;
+}
+
+.itinerary-leaflet-marker.is-assumed {
+  border-style: dashed;
+}
+
+.itinerary-route-arrow-shell {
+  background: transparent;
+  border: 0;
+}
+
+.itinerary-route-arrow {
+  border-bottom: 5px solid transparent;
+  border-left: 10px solid var(--route-color, #2563eb);
+  border-top: 5px solid transparent;
+  filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.28));
+  height: 0;
+  transform: rotate(var(--route-angle, 0deg));
+  width: 0;
+}
+
+.itinerary-route-warning-shell {
+  background: transparent;
+  border: 0;
+}
+
+.itinerary-route-warning {
+  align-items: center;
+  background: #f59e0b;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  box-shadow: 0 8px 18px rgba(146, 64, 14, 0.28);
+  color: #ffffff;
+  display: flex;
+  font-size: 12px;
+  font-weight: 650;
+  height: 20px;
+  justify-content: center;
+  width: 20px;
+}
+
+.itinerary-leaflet-popup .leaflet-popup-content-wrapper {
+  border-radius: 8px;
+  box-shadow: 0 22px 70px rgba(15, 23, 42, 0.2);
+}
+
+.itinerary-leaflet-popup .leaflet-popup-content {
+  margin: 0;
+  min-width: 250px;
+}
+
+.itinerary-popup {
+  color: #334155;
+  font-family: var(--app-font);
+  padding: 14px;
+}
+
+.itinerary-popup h3 {
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.35;
+  margin: 4px 0 8px;
+}
+
+.itinerary-popup p {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.55;
+  margin: 8px 0 0;
+}
+
+.itinerary-popup button {
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  color: #4338ca;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  height: 36px;
+  margin-top: 12px;
+  width: 100%;
+}
+
+.itinerary-popup-eyebrow {
+  color: #4f46e5;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0;
+  margin: 0 !important;
+  text-transform: uppercase;
+}
+
+.itinerary-popup-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 10px;
+}
+
+.itinerary-popup-grid span {
+  background: #f8fafc;
+  border: 1px solid #eef2f7;
+  border-radius: 8px;
+  color: #64748b;
+  display: grid;
+  font-size: 10px;
+  font-weight: 600;
+  gap: 3px;
+  padding: 8px;
+  text-transform: uppercase;
+}
+
+.itinerary-popup-grid strong {
+  color: #0f172a;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.itinerary-popup-status {
+  border: 1px solid #fcd34d;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 10px;
+  padding: 4px 8px;
+}
+
+.itinerary-popup-status.real {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #047857;
+}
+
+.itinerary-popup-status.estimated {
+  background: #fffbeb;
+  border-color: #fcd34d;
+  color: #b45309;
+}
+
+.itinerary-popup-status.missing {
+  background: #fff1f2;
+  border-color: #fecdd3;
+  color: #be123c;
+}
+
+.itinerary-popup-warning {
+  color: #b45309 !important;
+  font-weight: 600 !important;
 }

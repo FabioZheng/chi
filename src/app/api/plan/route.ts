@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { runConstraintCheckerAgent, runInputConsistencyAgent, runPlannerAgent } from "@/agents";
+import { enrichItineraryWithGoogleRoutes } from "@/agents/googleMaps";
 import { AgentError } from "@/agents/llm";
 import { PlanRequestSchema, PlanResponseSchema } from "@/schemas/travel";
 import type { AgentTrace, ConfirmedPreference, InputConsistencyOutput, MemoryStatus, UserMemory } from "@/types/travel";
@@ -105,26 +106,27 @@ export async function POST(request: Request) {
     }
 
     const planner = await runPlannerAgent(body);
+    const routedItinerary = await enrichItineraryWithGoogleRoutes(planner.itinerary);
     const checker = await runConstraintCheckerAgent({
       prompt: body.prompt,
-      itinerary: planner.itinerary,
+      itinerary: routedItinerary,
       confirmedPreferences: body.confirmedPreferences,
       memory: body.memory,
       language: body.language
     });
     const summaries = planTraceSummaries({
       language: body.language,
-      optionCount: planner.itinerary.options.length,
+      optionCount: routedItinerary.options.length,
       warningCount: checker.warnings.length
     });
 
     const response = PlanResponseSchema.parse({
-      itinerary: planner.itinerary,
+      itinerary: routedItinerary,
       warnings: checker.warnings,
       memoryStatus: memoryStatus(body.memory, body.confirmedPreferences, body.language),
       trace: [
         trace("Input Consistency Agent", consistency.summary, consistency.issues.length),
-        trace("Planner Agent", summaries.planner, planner.itinerary.options.length),
+        trace("Planner Agent", summaries.planner, routedItinerary.options.length),
         trace("Constraint Checker Agent", summaries.checker, checker.warnings.length)
       ]
     });

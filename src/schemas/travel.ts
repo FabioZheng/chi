@@ -304,6 +304,20 @@ function normalizedStatus(input: unknown): AssumptionStatusValue {
   return "Pending";
 }
 
+function normalizedRouteReliability(input: unknown): "Real" | "Estimated" | "Missing" {
+  const value = asText(input, "Estimated").toLowerCase();
+
+  if (value.includes("missing") || value.includes("unavailable") || value.includes("unknown")) {
+    return "Missing";
+  }
+
+  if (value.includes("real") || value.includes("routed") || value.includes("verified")) {
+    return "Real";
+  }
+
+  return "Estimated";
+}
+
 function normalizedConfidence(input: unknown): number {
   const value = typeof input === "number" ? input : Number(asText(input, "0.7"));
   const scaled = value > 1 ? value / 100 : value;
@@ -401,6 +415,8 @@ export const PreferenceCategorySchema = z.enum([
 
 export const PreferenceSourceSchema = z.enum(["Inferred", "Memory", "User"]);
 export const AssumptionStatusSchema = z.enum(["Pending", "Accepted", "Edited", "Rejected"]);
+export const RouteReliabilitySchema = z.enum(["Real", "Estimated", "Missing"]);
+export const RouteProviderSchema = z.enum(["google_routes", "fallback_estimated"]);
 export const CostCategorySchema = z.enum([
   "accommodation",
   "transport",
@@ -836,35 +852,84 @@ export const RouteSegmentSchema = z.preprocess((input) => {
   const record = asRecord(input);
   const dayNumber = normalizedNullableDay(record.dayNumber ?? record.day);
   const fromPlaceId = routePlaceRef(
-    record.fromPlaceId ?? record.fromId ?? record.originId ?? record.originPlaceId ?? record.from ?? record.origin ?? record.start,
+    record.fromPlaceId ?? record.fromStopId ?? record.fromId ?? record.originId ?? record.originPlaceId ?? record.from ?? record.origin ?? record.start,
     dayNumber ? `day-${dayNumber}-route-origin` : "route-origin"
   );
   const toPlaceId = routePlaceRef(
-    record.toPlaceId ?? record.toId ?? record.destinationId ?? record.destinationPlaceId ?? record.to ?? record.destination ?? record.end,
+    record.toPlaceId ?? record.toStopId ?? record.toId ?? record.destinationId ?? record.destinationPlaceId ?? record.to ?? record.destination ?? record.end,
     dayNumber ? `day-${dayNumber}-route-destination` : "route-destination"
   );
+  const rawDistanceMeters = normalizedNonNegativeNumber(record.distanceMeters ?? record.meters);
+  const distanceKm = normalizedNonNegativeNumber(record.distanceKm ?? record.km ?? record.distance, rawDistanceMeters / 1000);
+  const distanceMeters = normalizedNonNegativeNumber(record.distanceMeters ?? record.meters, distanceKm * 1000);
+  const durationSeconds = normalizedNonNegativeNumber(
+    record.durationSeconds ?? record.duration_seconds ?? record.seconds,
+    normalizedNonNegativeNumber(record.estimatedTravelTimeMinutes ?? record.travelTimeMinutes ?? record.durationMinutes ?? record.minutes) * 60
+  );
+  const routeStatus = normalizedRouteReliability(record.geometryStatus ?? record.routeStatus ?? record.routingStatus ?? record.reliability ?? record.status);
+  const providerText = asText(record.provider, routeStatus === "Real" ? "google_routes" : "fallback_estimated");
+  const warnings = Array.isArray(record.warnings)
+    ? record.warnings.map((warning) => asText(warning)).filter(Boolean).slice(0, 8)
+    : asText(record.warning)
+      ? [asText(record.warning)]
+      : [];
 
   return {
     id: asText(record.id, `${fromPlaceId}-to-${toPlaceId}`.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "") || "route-segment"),
     dayNumber,
     fromPlaceId,
     toPlaceId,
+    fromStopId: asText(record.fromStopId ?? record.fromPlaceId, fromPlaceId),
+    toStopId: asText(record.toStopId ?? record.toPlaceId, toPlaceId),
+    fromCoordinates: normalizedCoordinates(record.fromCoordinates ?? record.originCoordinates ?? record.origin_coordinate),
+    toCoordinates: normalizedCoordinates(record.toCoordinates ?? record.destinationCoordinates ?? record.destination_coordinate),
     transportMode: asText(record.transportMode ?? record.mode ?? record.transport, "Unspecified transport"),
     estimatedTravelTimeMinutes: normalizedNonNegativeNumber(
-      record.estimatedTravelTimeMinutes ?? record.travelTimeMinutes ?? record.durationMinutes ?? record.minutes
+      record.estimatedTravelTimeMinutes ?? record.travelTimeMinutes ?? record.durationMinutes ?? record.minutes,
+      durationSeconds / 60
     ),
-    distanceKm: normalizedNonNegativeNumber(record.distanceKm ?? record.km ?? record.distance),
-    notes: asText(record.notes ?? record.note ?? record.rationale, "Estimated movement between places.")
+    durationSeconds,
+    distanceKm,
+    distanceMeters,
+    encodedPolyline: asText(record.encodedPolyline ?? record.polyline ?? record.routePolyline) || null,
+    provider: providerText === "google_routes" ? "google_routes" : "fallback_estimated",
+    geometryStatus: routeStatus,
+    confidence: normalizedConfidence(record.confidence ?? record.routeConfidence ?? record.routingConfidence),
+    routeStatus,
+    reason: asText(
+      record.reason ?? record.choiceReason ?? record.transportReason ?? record.rationale ?? record.notes ?? record.note,
+      "Transport choice follows the reviewed preferences and available route data."
+    ),
+    relatedPreference:
+      record.relatedPreference === undefined && record.relatedPreferenceId === undefined && record.preference === undefined
+        ? null
+        : asText(record.relatedPreference ?? record.relatedPreferenceId ?? record.preference),
+    notes: asText(record.notes ?? record.note ?? record.rationale, "Estimated movement between places."),
+    warnings
   };
 }, z.object({
   id: z.string().min(1),
   dayNumber: z.number().int().min(1).nullable(),
   fromPlaceId: z.string().min(1),
   toPlaceId: z.string().min(1),
+  fromStopId: z.string().min(1),
+  toStopId: z.string().min(1),
+  fromCoordinates: CoordinatesSchema.nullable(),
+  toCoordinates: CoordinatesSchema.nullable(),
   transportMode: z.string().min(1),
   estimatedTravelTimeMinutes: z.number().min(0),
+  durationSeconds: z.number().min(0),
   distanceKm: z.number().min(0),
-  notes: z.string().min(1)
+  distanceMeters: z.number().min(0),
+  encodedPolyline: z.string().nullable(),
+  provider: RouteProviderSchema,
+  geometryStatus: RouteReliabilitySchema,
+  confidence: z.number().min(0).max(1),
+  routeStatus: RouteReliabilitySchema,
+  reason: z.string().min(1),
+  relatedPreference: z.string().nullable(),
+  notes: z.string().min(1),
+  warnings: z.array(z.string())
 }));
 
 export const ActivitySchema = z.preprocess((input) => {

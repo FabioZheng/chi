@@ -6,13 +6,12 @@ import {
   Bed,
   Bus,
   CalendarDays,
+  ChevronDown,
   Euro,
   Footprints,
-  Layers,
   MapPin,
   Navigation2,
   Route,
-  ShieldCheck,
   Sparkles,
   Tickets,
   Timer,
@@ -40,14 +39,29 @@ type ItineraryCanvasProps = {
   onSelectOption: (id: string) => void;
   planning: boolean;
   labels: UIText;
+  mode?: "map" | "review";
+  onOpenReview?: (dayNumber?: number | null) => void;
 };
 
 type MapView = "all" | number;
 
-type PositionedPlace = MapPlace & {
+type DisplayPlace = MapPlace & {
   sequence: number;
+  orderInDay: number;
+  markerLabel: string;
+  kind: "poi" | "base";
+  activity: Activity | null;
+  isAssumedBase: boolean;
+  dayTitle: string | null;
+};
+
+type PositionedPlace = DisplayPlace & {
   x: number;
   y: number;
+};
+
+type DisplayRouteSegment = RouteSegment & {
+  isSynthetic: boolean;
 };
 
 type MapCamera = {
@@ -124,11 +138,15 @@ function linkedAssumptions(activity: Activity, assumptions: Assumption[]) {
     .slice(0, 2);
 }
 
-function derivePlaces(option: ItineraryOption): MapPlace[] {
-  if (option.mapPlaces.length > 0) {
-    return option.mapPlaces;
-  }
+function normalizedPlaceText(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
 
+function placeStableKey(place: Pick<MapPlace, "title" | "location">) {
+  return `${normalizedPlaceText(place.title)}|${normalizedPlaceText(place.location)}`;
+}
+
+function activityPlaces(option: ItineraryOption): MapPlace[] {
   return option.days.flatMap((day) =>
     day.activities.map((activity) => ({
       id: `day-${day.dayNumber}-${activity.id}`,
@@ -141,6 +159,212 @@ function derivePlaces(option: ItineraryOption): MapPlace[] {
       unavailableReason: activity.locationUnavailableReason
     }))
   );
+}
+
+function derivePlaces(option: ItineraryOption): MapPlace[] {
+  const derivedActivityPlaces = activityPlaces(option);
+
+  if (option.mapPlaces.length === 0) {
+    return derivedActivityPlaces;
+  }
+
+  const activityById = new Map<string, MapPlace>();
+  const activityByStableKey = new Map<string, MapPlace>();
+
+  derivedActivityPlaces.forEach((place) => {
+    if (place.sourceActivityId) {
+      activityById.set(place.sourceActivityId, place);
+    }
+
+    activityById.set(place.id, place);
+    activityByStableKey.set(placeStableKey(place), place);
+  });
+
+  const consumedActivityIds = new Set<string>();
+  const mergedPlaces = option.mapPlaces.map((place) => {
+    const activityMatch =
+      (place.sourceActivityId ? activityById.get(place.sourceActivityId) : null) ||
+      activityById.get(place.id) ||
+      activityByStableKey.get(placeStableKey(place));
+    const coordinates = place.coordinates ?? activityMatch?.coordinates ?? null;
+
+    if (activityMatch?.sourceActivityId) {
+      consumedActivityIds.add(activityMatch.sourceActivityId);
+    }
+
+    consumedActivityIds.add(activityMatch?.id ?? "");
+
+    return {
+      ...place,
+      dayNumber: place.dayNumber ?? activityMatch?.dayNumber ?? null,
+      coordinates,
+      locationStatus: coordinates ? (place.coordinates ? place.locationStatus : activityMatch?.locationStatus ?? "Approximate") : place.locationStatus,
+      sourceActivityId: place.sourceActivityId ?? activityMatch?.sourceActivityId ?? null,
+      unavailableReason: coordinates ? null : place.unavailableReason ?? activityMatch?.unavailableReason ?? labelsUnavailableReason(activityMatch)
+    };
+  });
+  const mergedIds = new Set(mergedPlaces.map((place) => place.id));
+  const mergedStableKeys = new Set(mergedPlaces.map((place) => `${place.dayNumber ?? "all"}|${placeStableKey(place)}`));
+  const supplementalActivityPlaces = derivedActivityPlaces.filter((place) => {
+    const sourceId = place.sourceActivityId ?? place.id;
+    return !mergedIds.has(place.id) && !consumedActivityIds.has(sourceId) && !mergedStableKeys.has(`${place.dayNumber ?? "all"}|${placeStableKey(place)}`);
+  });
+
+  return [...mergedPlaces, ...supplementalActivityPlaces];
+}
+
+function activityLookup(option: ItineraryOption) {
+  const lookup = new Map<string, { activity: Activity; day: ItineraryDay; order: number }>();
+
+  option.days.forEach((day) => {
+    day.activities.forEach((activity, index) => {
+      lookup.set(activity.id, { activity, day, order: index + 1 });
+    });
+  });
+
+  return lookup;
+}
+
+function averageCoordinates(places: Array<Pick<MapPlace, "coordinates">>) {
+  const located = places.filter((place) => place.coordinates);
+
+  if (located.length === 0) {
+    return null;
+  }
+
+  return {
+    lat: located.reduce((sum, place) => sum + (place.coordinates?.lat ?? 0), 0) / located.length,
+    lng: located.reduce((sum, place) => sum + (place.coordinates?.lng ?? 0), 0) / located.length
+  };
+}
+
+function buildDisplayPlaces(option: ItineraryOption, labels: UIText): DisplayPlace[] {
+  const rawPlaces = derivePlaces(option);
+  const activities = activityLookup(option);
+  const consumedOrder = new Map<number, number>();
+
+  const orderedPlaces = rawPlaces
+    .map((place, sequence) => {
+      const activityMatch = place.sourceActivityId ? activities.get(place.sourceActivityId) : activities.get(place.id);
+      const dayNumber = place.dayNumber ?? activityMatch?.day.dayNumber ?? null;
+      const orderInDay = activityMatch?.order ?? 0;
+
+      return {
+        place,
+        sequence,
+        dayNumber,
+        orderInDay
+      };
+    })
+    .sort((a, b) => {
+      const dayA = a.dayNumber ?? 999;
+      const dayB = b.dayNumber ?? 999;
+
+      if (dayA !== dayB) {
+        return dayA - dayB;
+      }
+
+      if (a.orderInDay !== b.orderInDay) {
+        return a.orderInDay - b.orderInDay;
+      }
+
+      return a.sequence - b.sequence;
+    });
+
+  const displayPlaces: DisplayPlace[] = orderedPlaces.map(({ place }, sequence) => {
+    const activityMatch = place.sourceActivityId ? activities.get(place.sourceActivityId) : activities.get(place.id);
+    const dayNumber = place.dayNumber ?? activityMatch?.day.dayNumber ?? null;
+    const nextOrder = dayNumber ? (consumedOrder.get(dayNumber) || 0) + 1 : sequence + 1;
+
+    if (dayNumber) {
+      consumedOrder.set(dayNumber, nextOrder);
+    }
+
+    return {
+      ...place,
+      dayNumber,
+      sequence,
+      orderInDay: activityMatch?.order || nextOrder,
+      markerLabel: String(activityMatch?.order || nextOrder),
+      kind: "poi",
+      activity: activityMatch?.activity || null,
+      isAssumedBase: false,
+      dayTitle: activityMatch?.day.title || null
+    };
+  });
+
+  const basePlaces = option.days.map((day, index) => {
+    const dayPlaces = displayPlaces.filter((place) => place.dayNumber === day.dayNumber && place.coordinates);
+    const coordinates = averageCoordinates(dayPlaces);
+    const area = day.accommodation?.area || primaryDayLocation(day, displayPlaces);
+    const baseTitle = day.accommodation ? labels.hotelBase : labels.assumedBaseArea;
+    const isAssumedBase = !day.accommodation || day.accommodation.status !== "Accepted";
+
+    return {
+      id: `base-day-${day.dayNumber}`,
+      dayNumber: day.dayNumber,
+      title: baseTitle,
+      location: area,
+      coordinates,
+      locationStatus: coordinates ? "Approximate" as const : "Unavailable" as const,
+      sourceActivityId: null,
+      unavailableReason: coordinates ? null : labels.routeMissingReason,
+      sequence: displayPlaces.length + index,
+      orderInDay: 0,
+      markerLabel: "B",
+      kind: "base" as const,
+      activity: null,
+      isAssumedBase,
+      dayTitle: day.title
+    };
+  });
+
+  return [...displayPlaces, ...basePlaces];
+}
+
+function labelsUnavailableReason(place: MapPlace | undefined) {
+  return place?.unavailableReason ?? "Coordinates unavailable.";
+}
+
+function sequencedPlacesForView(
+  places: DisplayPlace[],
+  option: ItineraryOption,
+  view: MapView
+) {
+  if (view === "all") {
+    return places;
+  }
+
+  const dayPlaces = places.filter((place) => place.dayNumber === view);
+
+  if (dayPlaces.some((place) => place.coordinates)) {
+    return dayPlaces;
+  }
+
+  const routePlaceIds = new Set<string>();
+  routeSegmentsForView(option, view).forEach((segment) => {
+    routePlaceIds.add(segment.fromPlaceId);
+    routePlaceIds.add(segment.toPlaceId);
+  });
+  const referencedSharedPlaces = places.filter(
+    (place) =>
+      place.dayNumber === null &&
+      place.coordinates &&
+      (routePlaceIds.has(place.id) || Boolean(place.sourceActivityId && routePlaceIds.has(place.sourceActivityId)))
+  );
+  const sharedPlaces = referencedSharedPlaces.length > 0 ? referencedSharedPlaces : places.filter((place) => place.dayNumber === null && place.coordinates);
+  const clonedSharedPlaces = sharedPlaces.map((place) => ({
+    ...place,
+    dayNumber: view
+  }));
+
+  return [...dayPlaces, ...clonedSharedPlaces];
+}
+
+function mapPlacesKey(places: DisplayPlace[]) {
+  return places
+    .map((place) => `${place.id}:${place.dayNumber ?? "all"}:${place.coordinates?.lat ?? "x"}:${place.coordinates?.lng ?? "x"}`)
+    .join("|");
 }
 
 function routeSegmentLooseKey(segment: RouteSegment) {
@@ -156,6 +380,238 @@ function routeSegmentLooseKey(segment: RouteSegment) {
 
 function routeSegmentRenderKey(segment: RouteSegment, index: number) {
   return `${segment.id}-${segment.dayNumber ?? "all"}-${segment.fromPlaceId}-${segment.toPlaceId}-${index}`;
+}
+
+function routeStatusLabel(labels: UIText, status: RouteSegment["routeStatus"]) {
+  if (status === "Real") {
+    return labels.routeReal;
+  }
+
+  if (status === "Missing") {
+    return labels.routeMissing;
+  }
+
+  return labels.routeEstimated;
+}
+
+function routeStatusTone(status: RouteSegment["routeStatus"]) {
+  if (status === "Real") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+
+  if (status === "Missing") {
+    return "border-rose-200 bg-rose-50 text-rose-700";
+  }
+
+  return "border-amber-200 bg-amber-50 text-amber-700";
+}
+
+function haversineDistanceKm(
+  from: { lat: number; lng: number } | null | undefined,
+  to: { lat: number; lng: number } | null | undefined
+) {
+  if (!from || !to) {
+    return 0;
+  }
+
+  const radiusKm = 6371;
+  const dLat = ((to.lat - from.lat) * Math.PI) / 180;
+  const dLng = ((to.lng - from.lng) * Math.PI) / 180;
+  const lat1 = (from.lat * Math.PI) / 180;
+  const lat2 = (to.lat * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+
+  return radiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function estimateTravelMinutes(mode: string, distanceKm: number) {
+  const normalizedMode = mode.toLowerCase();
+
+  if (distanceKm <= 0) {
+    return 0;
+  }
+
+  if (normalizedMode.includes("walk")) {
+    return Math.max(5, Math.round(distanceKm * 13));
+  }
+
+  if (normalizedMode.includes("train") || normalizedMode.includes("metro") || normalizedMode.includes("public") || normalizedMode.includes("bus")) {
+    return Math.max(8, Math.round(distanceKm * 5 + 8));
+  }
+
+  if (normalizedMode.includes("flight") || normalizedMode.includes("air")) {
+    return Math.max(60, Math.round(distanceKm * 0.12 + 90));
+  }
+
+  return Math.max(8, Math.round(distanceKm * 4 + 6));
+}
+
+function routeDistance(segment: RouteSegment, from?: DisplayPlace, to?: DisplayPlace) {
+  return segment.distanceKm || segment.distanceMeters / 1000 || haversineDistanceKm(from?.coordinates, to?.coordinates);
+}
+
+function isVerifiedRouteGeometry(segment: RouteSegment) {
+  return segment.provider === "google_routes" && segment.geometryStatus === "Real" && Boolean(segment.encodedPolyline);
+}
+
+function routeGeometryStatus(segment: RouteSegment): RouteSegment["routeStatus"] {
+  if (isVerifiedRouteGeometry(segment)) {
+    return "Real";
+  }
+
+  return segment.routeStatus === "Missing" || segment.geometryStatus === "Missing" ? "Missing" : "Estimated";
+}
+
+function decodeGooglePolyline(encoded: string): [number, number][] {
+  let index = 0;
+  let lat = 0;
+  let lng = 0;
+  const coordinates: [number, number][] = [];
+
+  while (index < encoded.length) {
+    let shift = 0;
+    let result = 0;
+    let byte = 0;
+
+    do {
+      byte = encoded.charCodeAt(index++) - 63;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20 && index < encoded.length);
+
+    lat += result & 1 ? ~(result >> 1) : result >> 1;
+    shift = 0;
+    result = 0;
+
+    do {
+      byte = encoded.charCodeAt(index++) - 63;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20 && index < encoded.length);
+
+    lng += result & 1 ? ~(result >> 1) : result >> 1;
+    coordinates.push([lat / 1e5, lng / 1e5]);
+  }
+
+  return coordinates;
+}
+
+type TripTimelineItem = {
+  id: string;
+  startDay: number;
+  endDay: number;
+  title: string;
+  placeId: string | null;
+};
+
+function primaryDayLocation(day: ItineraryDay, places: DisplayPlace[]) {
+  const dayPlaces = places.filter((place) => place.dayNumber === day.dayNumber);
+  const firstLocatedPlace = dayPlaces.find((place) => place.coordinates) || dayPlaces[0];
+  const firstActivity = day.activities[0];
+
+  return (
+    day.accommodation?.area ||
+    firstLocatedPlace?.location ||
+    firstLocatedPlace?.title ||
+    firstActivity?.location ||
+    day.title
+  );
+}
+
+function buildTripTimelineItems(option: ItineraryOption, places: DisplayPlace[]): TripTimelineItem[] {
+  const items: TripTimelineItem[] = [];
+
+  option.days.forEach((day) => {
+    const title = primaryDayLocation(day, places);
+    const dayPlace = places.find((place) => place.dayNumber === day.dayNumber && place.coordinates) || null;
+    const current = items[items.length - 1];
+
+    if (current && current.title === title && current.endDay === day.dayNumber - 1) {
+      current.endDay = day.dayNumber;
+      current.placeId = current.placeId || dayPlace?.id || null;
+      return;
+    }
+
+    items.push({
+      id: `timeline-${day.dayNumber}-${normalizedPlaceText(title) || "day"}`,
+      startDay: day.dayNumber,
+      endDay: day.dayNumber,
+      title,
+      placeId: dayPlace?.id || null
+    });
+  });
+
+  return items;
+}
+
+function dayRangeLabel(labels: UIText, startDay: number, endDay: number) {
+  if (startDay === endDay) {
+    return formatDay(labels, startDay);
+  }
+
+  return labels.daySuffix
+    ? `${labels.day}${startDay}-${endDay}${labels.daySuffix}`
+    : `${labels.day} ${startDay}-${endDay}`;
+}
+
+function selectedPlaceHighlights(selectedOption: ItineraryOption, selectedPlace: MapPlace | null) {
+  if (!selectedPlace?.dayNumber) {
+    return selectedOption.days[0]?.activities.slice(0, 3) || [];
+  }
+
+  const day = selectedOption.days.find((item) => item.dayNumber === selectedPlace.dayNumber);
+  if (!day) {
+    return [];
+  }
+
+  const stableLocation = normalizedPlaceText(selectedPlace.location);
+  const related = day.activities.filter((activity) => {
+    const matchesSource = selectedPlace.sourceActivityId && selectedPlace.sourceActivityId === activity.id;
+    const matchesLocation = stableLocation && normalizedPlaceText(activity.location) === stableLocation;
+    return matchesSource || matchesLocation;
+  });
+
+  return (related.length > 0 ? related : day.activities).slice(0, 3);
+}
+
+function routeTransportModes(routeSegments: DisplayRouteSegment[], labels: UIText) {
+  const modes = new Map<string, { label: string; color: string; dashArray?: string }>();
+  const seedModes = [
+    labels.walk,
+    labels.taxiCar,
+    labels.publicTransport,
+    labels.train,
+    labels.flight,
+    labels.routeEstimated
+  ];
+
+  seedModes.forEach((label) => {
+    const key = label.trim().toLowerCase();
+    if (!key || modes.has(key)) {
+      return;
+    }
+
+    modes.set(key, {
+      label,
+      ...routeVisualStyle(label, "#64748b", label === labels.routeEstimated ? "Estimated" : "Real")
+    });
+  });
+
+  routeSegments.forEach((segment) => {
+    const key = segment.transportMode.trim().toLowerCase();
+    if (!key || modes.has(key)) {
+      return;
+    }
+
+    modes.set(key, {
+      label: segment.transportMode,
+      ...routeVisualStyle(segment.transportMode, dayColor(segment.dayNumber), routeGeometryStatus(segment))
+    });
+  });
+
+  return Array.from(modes.values()).slice(0, 7);
 }
 
 function dedupeRouteSegments(segments: RouteSegment[]) {
@@ -208,12 +664,349 @@ function routeSegmentsForView(option: ItineraryOption, view: MapView) {
   ]);
 }
 
+function resolvePlace(lookup: Map<string, DisplayPlace>, placeId: string) {
+  return lookup.get(placeId) || null;
+}
+
+function displayPlaceLookup(places: DisplayPlace[]) {
+  const lookup = new Map<string, DisplayPlace>();
+
+  places.forEach((place) => {
+    lookup.set(place.id, place);
+    if (place.sourceActivityId) {
+      lookup.set(place.sourceActivityId, place);
+    }
+  });
+
+  return lookup;
+}
+
+function routeEndpointKey(segment: RouteSegment, lookup: Map<string, DisplayPlace>) {
+  const from = resolvePlace(lookup, segment.fromPlaceId);
+  const to = resolvePlace(lookup, segment.toPlaceId);
+
+  return `${segment.dayNumber ?? "all"}|${from?.id || segment.fromPlaceId}|${to?.id || segment.toPlaceId}`;
+}
+
+function activeAssumptionText(assumptions: Assumption[]) {
+  return assumptions
+    .filter((assumption) => assumption.status !== "Rejected")
+    .map((assumption) => `${assumption.category} ${assumption.label} ${assumption.value}`)
+    .join(" ")
+    .toLowerCase();
+}
+
+function chooseSyntheticTransportMode(distanceKm: number, assumptions: Assumption[], labels: UIText) {
+  const text = activeAssumptionText(assumptions);
+
+  if (distanceKm > 250) {
+    return text.includes("train") || text.includes("rail") ? labels.train : labels.flight;
+  }
+
+  if (text.includes("budget") || text.includes("cheap") || text.includes("low-cost") || text.includes("public")) {
+    return labels.publicTransport;
+  }
+
+  if (text.includes("comfort") || text.includes("convenien") || text.includes("minimal walking") || text.includes("taxi")) {
+    return labels.taxiCar;
+  }
+
+  if (distanceKm > 25) {
+    return labels.train;
+  }
+
+  if (distanceKm <= 1.2) {
+    return labels.walk;
+  }
+
+  return labels.publicTransport;
+}
+
+function relatedRoutePreference(assumptions: Assumption[]) {
+  const transportRelated = assumptions.find(
+    (assumption) =>
+      assumption.status !== "Rejected" &&
+      ["transport", "walkingTolerance", "budget", "pace"].includes(assumption.category)
+  );
+
+  return transportRelated?.value || null;
+}
+
+function syntheticRouteSegment({
+  from,
+  to,
+  dayNumber,
+  purpose,
+  assumptions,
+  labels
+}: {
+  from: DisplayPlace;
+  to: DisplayPlace;
+  dayNumber: number | null;
+  purpose: string;
+  assumptions: Assumption[];
+  labels: UIText;
+}): DisplayRouteSegment {
+  const distanceKm = haversineDistanceKm(from.coordinates, to.coordinates);
+  const routeStatus: RouteSegment["routeStatus"] = from.coordinates && to.coordinates ? "Estimated" : "Missing";
+  const transportMode = routeStatus === "Missing" ? labels.routeMissing : chooseSyntheticTransportMode(distanceKm, assumptions, labels);
+
+  return {
+    id: `estimated-${dayNumber ?? "all"}-${from.id}-${to.id}`,
+    dayNumber,
+    fromPlaceId: from.id,
+    toPlaceId: to.id,
+    fromStopId: from.id,
+    toStopId: to.id,
+    fromCoordinates: from.coordinates,
+    toCoordinates: to.coordinates,
+    transportMode,
+    estimatedTravelTimeMinutes: estimateTravelMinutes(transportMode, distanceKm),
+    durationSeconds: estimateTravelMinutes(transportMode, distanceKm) * 60,
+    distanceKm,
+    distanceMeters: Math.round(distanceKm * 1000),
+    encodedPolyline: null,
+    provider: "fallback_estimated",
+    geometryStatus: routeStatus,
+    confidence: routeStatus === "Estimated" ? 0.45 : 0.1,
+    routeStatus,
+    reason: routeStatus === "Estimated" ? `${labels.routeEstimatedReason} ${labels.activePreferenceRouteReason}` : labels.routeMissingReason,
+    relatedPreference: relatedRoutePreference(assumptions),
+    notes: purpose,
+    warnings: [routeStatus === "Estimated" ? labels.routeEstimatedReason : labels.routeMissingReason],
+    isSynthetic: true
+  };
+}
+
+function normalizeRouteSegment(segment: RouteSegment): DisplayRouteSegment {
+  return {
+    ...segment,
+    confidence: typeof segment.confidence === "number" ? segment.confidence : 0.55,
+    routeStatus: routeGeometryStatus(segment),
+    geometryStatus: routeGeometryStatus(segment),
+    provider: isVerifiedRouteGeometry(segment) ? "google_routes" : "fallback_estimated",
+    reason: segment.reason || segment.notes,
+    relatedPreference: segment.relatedPreference ?? null,
+    isSynthetic: false
+  };
+}
+
+function routeLegExists(
+  existingKeys: Set<string>,
+  lookup: Map<string, DisplayPlace>,
+  from: DisplayPlace,
+  to: DisplayPlace,
+  dayNumber: number | null
+) {
+  const key = `${dayNumber ?? "all"}|${from.id}|${to.id}`;
+  const reverseKey = `${dayNumber ?? "all"}|${to.id}|${from.id}`;
+
+  if (existingKeys.has(key) || existingKeys.has(reverseKey)) {
+    return true;
+  }
+
+  return Array.from(existingKeys).some((item) => {
+    const [, fromId, toId] = item.split("|");
+    const resolvedFrom = resolvePlace(lookup, fromId);
+    const resolvedTo = resolvePlace(lookup, toId);
+    return resolvedFrom?.id === from.id && resolvedTo?.id === to.id;
+  });
+}
+
+function buildContinuousRouteSegments(
+  option: ItineraryOption,
+  places: DisplayPlace[],
+  view: MapView,
+  assumptions: Assumption[],
+  labels: UIText
+) {
+  const lookup = displayPlaceLookup(places);
+  const structuredSegments = routeSegmentsForView(option, view).map(normalizeRouteSegment);
+  const existingKeys = new Set(structuredSegments.map((segment) => routeEndpointKey(segment, lookup)));
+  const expectedSegments: DisplayRouteSegment[] = [];
+  const activeDays = option.days.filter((day) => view === "all" || day.dayNumber === view);
+
+  activeDays.forEach((day) => {
+    const dayPlaces = places
+      .filter((place) => place.dayNumber === day.dayNumber && place.kind === "poi")
+      .sort((a, b) => a.orderInDay - b.orderInDay || a.sequence - b.sequence);
+    const base = places.find((place) => place.id === `base-day-${day.dayNumber}`);
+
+    if (base && dayPlaces[0] && !routeLegExists(existingKeys, lookup, base, dayPlaces[0], day.dayNumber)) {
+      expectedSegments.push(
+        syntheticRouteSegment({
+          from: base,
+          to: dayPlaces[0],
+          dayNumber: day.dayNumber,
+          purpose: `${labels.hotelBase} - ${formatDay(labels, day.dayNumber)} ${labels.stopOrder} 1`,
+          assumptions,
+          labels
+        })
+      );
+    }
+
+    dayPlaces.slice(1).forEach((place, index) => {
+      const from = dayPlaces[index];
+      if (!routeLegExists(existingKeys, lookup, from, place, day.dayNumber)) {
+        expectedSegments.push(
+          syntheticRouteSegment({
+            from,
+            to: place,
+            dayNumber: day.dayNumber,
+            purpose: `${formatDay(labels, day.dayNumber)} ${labels.stopOrder} ${index + 1} - ${index + 2}`,
+            assumptions,
+            labels
+          })
+        );
+      }
+    });
+
+    const last = dayPlaces[dayPlaces.length - 1];
+    if (base && last && !routeLegExists(existingKeys, lookup, last, base, day.dayNumber)) {
+      expectedSegments.push(
+        syntheticRouteSegment({
+          from: last,
+          to: base,
+          dayNumber: day.dayNumber,
+          purpose: `${formatDay(labels, day.dayNumber)} ${labels.stopOrder} ${dayPlaces.length} - ${labels.hotelBase}`,
+          assumptions,
+          labels
+        })
+      );
+    }
+  });
+
+  if (view === "all") {
+    option.days.slice(1).forEach((day, index) => {
+      const previousDay = option.days[index];
+      const previousBase = places.find((place) => place.id === `base-day-${previousDay.dayNumber}`);
+      const nextBase = places.find((place) => place.id === `base-day-${day.dayNumber}`);
+
+      if (
+        previousBase &&
+        nextBase &&
+        normalizedPlaceText(previousBase.location) !== normalizedPlaceText(nextBase.location) &&
+        !routeLegExists(existingKeys, lookup, previousBase, nextBase, day.dayNumber)
+      ) {
+        expectedSegments.push(
+          syntheticRouteSegment({
+            from: previousBase,
+            to: nextBase,
+            dayNumber: day.dayNumber,
+            purpose: `${formatDay(labels, previousDay.dayNumber)} - ${formatDay(labels, day.dayNumber)} ${labels.baseChanges}`,
+            assumptions,
+            labels
+          })
+        );
+      }
+    });
+  }
+
+  return dedupeRouteSegments([...structuredSegments, ...expectedSegments]).map((segment) => ({
+    ...segment,
+    isSynthetic: "isSynthetic" in segment ? Boolean(segment.isSynthetic) : false
+  }));
+}
+
 function dayColor(dayNumber: number | null | undefined) {
   if (!dayNumber) {
     return "#64748b";
   }
 
   return DAY_COLORS[(dayNumber - 1) % DAY_COLORS.length];
+}
+
+function routeVisualStyle(transportMode: string, fallbackColor: string, routeStatus: RouteSegment["routeStatus"] = "Real") {
+  const mode = transportMode.toLowerCase();
+  const estimatedDash = routeStatus === "Estimated" || routeStatus === "Missing" ? "7 7" : undefined;
+
+  if (mode.includes("train") || mode.includes("rail")) {
+    return { color: "#dc2626", dashArray: estimatedDash };
+  }
+
+  if (mode.includes("taxi") || mode.includes("car") || mode.includes("drive") || mode.includes("private")) {
+    return { color: "#334155", dashArray: estimatedDash };
+  }
+
+  if (mode.includes("bus") || mode.includes("metro") || mode.includes("public") || mode.includes("transit")) {
+    return { color: "#f97316", dashArray: estimatedDash };
+  }
+
+  if (mode.includes("ferry") || mode.includes("boat")) {
+    return { color: "#0284c7", dashArray: "10 8" };
+  }
+
+  if (mode.includes("flight") || mode.includes("plane") || mode.includes("air")) {
+    return { color: "#7c3aed", dashArray: "4 8" };
+  }
+
+  if (mode.includes("walk")) {
+    return { color: "#2563eb", dashArray: "3 7" };
+  }
+
+  return { color: fallbackColor, dashArray: estimatedDash };
+}
+
+function routeBearingDegrees(
+  from: { lat: number; lng: number },
+  to: { lat: number; lng: number }
+) {
+  return (Math.atan2(to.lat - from.lat, to.lng - from.lng) * 180) / Math.PI;
+}
+
+function routePopupHtml(segment: DisplayRouteSegment, from: DisplayPlace, to: DisplayPlace, labels: UIText) {
+  const status = routeGeometryStatus(segment);
+  const statusClass = status.toLowerCase();
+  const distance = segment.distanceKm || haversineDistanceKm(from.coordinates, to.coordinates);
+  const warning =
+    status === "Real"
+      ? ""
+      : `<p class="itinerary-popup-warning">${escapeHtml(
+          [...(segment.warnings || []), labels.uncertainTransportAssumption].filter(Boolean).slice(0, 2).join(" ")
+        )}</p>`;
+
+  return `
+    <div class="itinerary-popup">
+      <p class="itinerary-popup-eyebrow">${escapeHtml(routeStatusLabel(labels, status))}</p>
+      <h3>${escapeHtml(labels.from)} ${escapeHtml(from.title)} ${escapeHtml(labels.to).toLowerCase()} ${escapeHtml(to.title)}</h3>
+      <div class="itinerary-popup-grid">
+        <span>${escapeHtml(labels.mode)}<strong>${escapeHtml(segment.transportMode)}</strong></span>
+        <span>${escapeHtml(labels.travelTime)}<strong>${escapeHtml(formatMinutes(segment.estimatedTravelTimeMinutes, labels))}</strong></span>
+        <span>${escapeHtml(labels.totalDistance)}<strong>${distance.toFixed(1)} km</strong></span>
+        <span>${escapeHtml(labels.routeConfidence)}<strong>${Math.round(segment.confidence * 100)}%</strong></span>
+        <span>${escapeHtml(labels.routeProvider)}<strong>${escapeHtml(segment.provider)}</strong></span>
+        <span>${escapeHtml(labels.routeGeometryStatus)}<strong>${escapeHtml(routeStatusLabel(labels, status))}</strong></span>
+      </div>
+      <p><strong>${escapeHtml(labels.routeChoiceReason)}:</strong> ${escapeHtml(segment.reason || segment.notes)}</p>
+      ${segment.relatedPreference ? `<p><strong>${escapeHtml(labels.relatedPreference)}:</strong> ${escapeHtml(segment.relatedPreference)}</p>` : ""}
+      <span class="itinerary-popup-status ${statusClass}">${escapeHtml(routeStatusLabel(labels, status))}</span>
+      ${warning}
+      <button type="button" data-open-review-day="${segment.dayNumber ?? ""}">${escapeHtml(labels.fixIssues)}</button>
+    </div>
+  `;
+}
+
+function placePopupHtml(place: DisplayPlace, labels: UIText) {
+  const dayLabel = place.dayNumber ? `${formatDay(labels, place.dayNumber)} - ${labels.stopOrder} ${place.markerLabel}` : labels.fullTrip;
+  const riskLine = place.activity
+    ? `${labels.warningTypeLabels.bookingRisk}: ${labels.impactLabels[place.activity.bookingRisk]} · ${labels.warningTypeLabels.openingHoursRisk}: ${labels.impactLabels[place.activity.openingHoursRisk]}`
+    : place.isAssumedBase
+      ? labels.assumedBaseArea
+      : labels.hotelBase;
+
+  return `
+    <div class="itinerary-popup">
+      <p class="itinerary-popup-eyebrow">${escapeHtml(dayLabel)}</p>
+      <h3>${escapeHtml(place.title)}</h3>
+      <p>${escapeHtml(place.activity?.description || place.location)}</p>
+      <div class="itinerary-popup-grid">
+        <span>${escapeHtml(labels.plannedActivity)}<strong>${escapeHtml(place.activity?.title || place.title)}</strong></span>
+        <span>${escapeHtml(labels.estimate)}<strong>${escapeHtml(place.activity?.time || place.locationStatus)}</strong></span>
+      </div>
+      <p>${escapeHtml(riskLine)}</p>
+      <button type="button" data-open-review-day="${place.dayNumber ?? ""}">${escapeHtml(labels.openInReviewPlanning)}</button>
+    </div>
+  `;
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -235,7 +1028,7 @@ function coordinatesToWorld(coordinates: { lat: number; lng: number }, zoom: num
   };
 }
 
-function fitCamera(places: Array<MapPlace & { sequence: number }>): MapCamera {
+function fitCamera(places: DisplayPlace[]): MapCamera {
   const available = places.filter((place) => place.coordinates);
 
   if (available.length === 0) {
@@ -287,7 +1080,7 @@ function fitCamera(places: Array<MapPlace & { sequence: number }>): MapCamera {
 }
 
 function projectPlaces(
-  places: Array<MapPlace & { sequence: number }>,
+  places: DisplayPlace[],
   camera: MapCamera,
   adjustment: MapAdjustment
 ): PositionedPlace[] {
@@ -321,17 +1114,38 @@ function buildPositionedLookup(places: PositionedPlace[]) {
   return lookup;
 }
 
-function fallbackRouteSegments(places: PositionedPlace[], labels: UIText): RouteSegment[] {
-  return places.slice(1).map((place, index) => ({
-    id: `fallback-${places[index].id}-${place.id}`,
-    dayNumber: place.dayNumber,
-    fromPlaceId: places[index].id,
-    toPlaceId: place.id,
-    transportMode: labels.noRouteSegments,
-    estimatedTravelTimeMinutes: 0,
-    distanceKm: 0,
-    notes: labels.noRouteSegments
-  }));
+function fallbackRouteSegments(places: PositionedPlace[], labels: UIText): DisplayRouteSegment[] {
+  return places.slice(1).map((place, index) => {
+    const from = places[index];
+    const distanceKm = haversineDistanceKm(from.coordinates, place.coordinates);
+    const status: RouteSegment["routeStatus"] = distanceKm > 0 ? "Estimated" : "Missing";
+
+    return {
+      id: `fallback-${from.id}-${place.id}`,
+      dayNumber: place.dayNumber,
+      fromPlaceId: from.id,
+      toPlaceId: place.id,
+      fromStopId: from.id,
+      toStopId: place.id,
+      fromCoordinates: from.coordinates,
+      toCoordinates: place.coordinates,
+      transportMode: labels.routeEstimated,
+      estimatedTravelTimeMinutes: estimateTravelMinutes(labels.publicTransport, distanceKm),
+      durationSeconds: estimateTravelMinutes(labels.publicTransport, distanceKm) * 60,
+      distanceKm,
+      distanceMeters: Math.round(distanceKm * 1000),
+      encodedPolyline: null,
+      provider: "fallback_estimated",
+      geometryStatus: status,
+      confidence: status === "Estimated" ? 0.35 : 0.1,
+      routeStatus: status,
+      reason: status === "Estimated" ? labels.routeEstimatedReason : labels.routeMissingReason,
+      relatedPreference: null,
+      notes: labels.noRouteSegments,
+      warnings: [status === "Estimated" ? labels.routeEstimatedReason : labels.routeMissingReason],
+      isSynthetic: true
+    };
+  });
 }
 
 function escapeHtml(value: string) {
@@ -356,17 +1170,23 @@ function LeafletRouteMap({
   viewLabel,
   planning = false,
   overlayTitle,
-  overlayBody
+  overlayBody,
+  className = "",
+  showChrome = true,
+  onOpenReview
 }: {
   labels: UIText;
-  places: Array<MapPlace & { sequence: number }>;
-  routeSegments: RouteSegment[];
+  places: DisplayPlace[];
+  routeSegments: DisplayRouteSegment[];
   selectedPlaceId?: string | null;
   onSelectPlace?: (id: string) => void;
   viewLabel: string;
   planning?: boolean;
   overlayTitle?: string;
   overlayBody?: string;
+  className?: string;
+  showChrome?: boolean;
+  onOpenReview?: (dayNumber?: number | null) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMapInstance | null>(null);
@@ -379,7 +1199,10 @@ function LeafletRouteMap({
     .map((place) => `${place.id}:${place.coordinates?.lat ?? "x"}:${place.coordinates?.lng ?? "x"}:${place.dayNumber ?? "all"}`)
     .join("|");
   const routeKey = routeSegments
-    .map((segment) => `${segment.id}:${segment.fromPlaceId}:${segment.toPlaceId}:${segment.dayNumber ?? "all"}`)
+    .map(
+      (segment) =>
+        `${segment.id}:${segment.fromPlaceId}:${segment.toPlaceId}:${segment.dayNumber ?? "all"}:${routeGeometryStatus(segment)}:${segment.confidence}:${segment.encodedPolyline ?? ""}`
+    )
     .join("|");
 
   useEffect(() => {
@@ -410,8 +1233,8 @@ function LeafletRouteMap({
       leaflet.control.zoom({ position: "topright" }).addTo(map);
       leaflet.control.attribution({ position: "bottomright", prefix: false }).addTo(map);
 
-      markerLayerRef.current = leaflet.layerGroup().addTo(map);
       routeLayerRef.current = leaflet.layerGroup().addTo(map);
+      markerLayerRef.current = leaflet.layerGroup().addTo(map);
       mapRef.current = map;
       map.setView([20, 0], 2);
       setMapReady((current) => current + 1);
@@ -434,6 +1257,34 @@ function LeafletRouteMap({
   }, [labels.mapDataAttribution]);
 
   useEffect(() => {
+    const map = mapRef.current;
+
+    if (!map || !onOpenReview) {
+      return;
+    }
+
+    const handlePopupOpen = (event: { popup: { getElement: () => HTMLElement | undefined } }) => {
+      const element = event.popup.getElement()?.querySelector<HTMLElement>("[data-open-review-day]");
+
+      if (!element) {
+        return;
+      }
+
+      element.onclick = () => {
+        const rawDay = element.dataset.openReviewDay;
+        const dayNumber = rawDay ? Number(rawDay) : null;
+        onOpenReview(Number.isFinite(dayNumber) && dayNumber ? dayNumber : null);
+      };
+    };
+
+    map.on("popupopen", handlePopupOpen);
+
+    return () => {
+      map.off("popupopen", handlePopupOpen);
+    };
+  }, [mapReady, onOpenReview]);
+
+  useEffect(() => {
     const leaflet = leafletRef.current;
     const map = mapRef.current;
     const markerLayer = markerLayerRef.current;
@@ -446,7 +1297,7 @@ function LeafletRouteMap({
     markerLayer.clearLayers();
     routeLayer.clearLayers();
 
-    const placeLookup = new Map<string, MapPlace & { sequence: number }>();
+    const placeLookup = new Map<string, DisplayPlace>();
 
     availablePlaces.forEach((place) => {
       placeLookup.set(place.id, place);
@@ -455,7 +1306,7 @@ function LeafletRouteMap({
       }
     });
 
-    routeSegments.forEach((segment) => {
+    routeSegments.forEach((segment, index) => {
       const from = placeLookup.get(segment.fromPlaceId);
       const to = placeLookup.get(segment.toPlaceId);
 
@@ -463,20 +1314,69 @@ function LeafletRouteMap({
         return;
       }
 
+      const status = routeGeometryStatus(segment);
+      const decodedCoordinates = isVerifiedRouteGeometry(segment) && segment.encodedPolyline ? decodeGooglePolyline(segment.encodedPolyline) : [];
+      const coordinates = decodedCoordinates.length >= 2 ? decodedCoordinates : [[from.coordinates.lat, from.coordinates.lng], [to.coordinates.lat, to.coordinates.lng]] as [number, number][];
+      const visualStyle = routeVisualStyle(segment.transportMode, dayColor(segment.dayNumber ?? from.dayNumber), status);
+      const midpoint: [number, number] = [
+        coordinates[Math.floor(coordinates.length / 2)]?.[0] ?? (from.coordinates.lat + to.coordinates.lat) / 2,
+        coordinates[Math.floor(coordinates.length / 2)]?.[1] ?? (from.coordinates.lng + to.coordinates.lng) / 2
+      ];
+      const arrowFrom = coordinates[Math.max(0, Math.floor(coordinates.length / 2) - 1)] || [from.coordinates.lat, from.coordinates.lng];
+      const arrowTo = coordinates[Math.min(coordinates.length - 1, Math.floor(coordinates.length / 2) + 1)] || [to.coordinates.lat, to.coordinates.lng];
+      const routeAngle = routeBearingDegrees({ lat: arrowFrom[0], lng: arrowFrom[1] }, { lat: arrowTo[0], lng: arrowTo[1] });
+
       leaflet
-        .polyline(
-          [
-            [from.coordinates.lat, from.coordinates.lng],
-            [to.coordinates.lat, to.coordinates.lng]
-          ],
-          {
-            color: dayColor(segment.dayNumber ?? from.dayNumber),
-            dashArray: segment.distanceKm === 0 ? "8 8" : undefined,
-            opacity: 0.86,
-            weight: 5
-          }
-        )
+        .polyline(coordinates, {
+          color: "#ffffff",
+          opacity: 0.78,
+          weight: 12,
+          lineCap: "round",
+          lineJoin: "round"
+        })
         .addTo(routeLayer);
+
+      const routeLine = leaflet
+        .polyline(coordinates, {
+          color: visualStyle.color,
+          dashArray: status !== "Real" || segment.distanceKm === 0 ? "7 7" : visualStyle.dashArray,
+          opacity: 0.92,
+          weight: status === "Missing" ? 4 : 6,
+          lineCap: "round",
+          lineJoin: "round"
+        });
+
+      routeLine.bindPopup(routePopupHtml(segment, from, to, labels), {
+        className: "itinerary-leaflet-popup",
+        maxWidth: 300
+      });
+      routeLine.addTo(routeLayer);
+
+      leaflet
+        .marker(midpoint, {
+          interactive: false,
+          icon: leaflet.divIcon({
+            className: "itinerary-route-arrow-shell",
+            html: `<div class="itinerary-route-arrow" style="--route-color:${visualStyle.color}; --route-angle:${routeAngle}deg"></div>`,
+            iconAnchor: [8, 8],
+            iconSize: [16, 16]
+          })
+        })
+        .addTo(routeLayer);
+
+      if (status !== "Real") {
+        leaflet
+          .marker(midpoint, {
+            interactive: false,
+            icon: leaflet.divIcon({
+              className: "itinerary-route-warning-shell",
+              html: `<div class="itinerary-route-warning">!</div>`,
+              iconAnchor: [10, 10],
+              iconSize: [20, 20]
+            })
+          })
+          .addTo(routeLayer);
+      }
     });
 
     availablePlaces.forEach((place) => {
@@ -488,39 +1388,48 @@ function LeafletRouteMap({
       const color = dayColor(place.dayNumber);
       const icon = leaflet.divIcon({
         className: "itinerary-leaflet-marker-shell",
-        html: `<div class="itinerary-leaflet-marker ${selected ? "is-selected" : ""}" style="--marker-color:${color}" title="${escapeHtml(
+        html: `<div class="itinerary-leaflet-marker ${place.kind === "base" ? "is-base" : ""} ${place.isAssumedBase ? "is-assumed" : ""} ${
+          selected ? "is-selected" : ""
+        }" style="--marker-color:${color}" title="${escapeHtml(
           place.title
-        )}">${place.sequence + 1}</div>`,
-        iconAnchor: [18, 18],
-        iconSize: [36, 36]
+        )}"><span class="itinerary-marker-number">${escapeHtml(place.markerLabel)}</span></div><div class="itinerary-leaflet-marker-label">${escapeHtml(
+          place.title
+        )}</div>`,
+        iconAnchor: [22, 22],
+        iconSize: [44, 58]
       });
 
-      leaflet
+      const marker = leaflet
         .marker([place.coordinates.lat, place.coordinates.lng], {
           icon,
           title: `${place.title} - ${place.location}`
         })
-        .on("click", () => onSelectPlace?.(place.id))
-        .addTo(markerLayer);
+        .on("click", () => onSelectPlace?.(place.id));
+
+      marker.bindPopup(placePopupHtml(place, labels), {
+        className: "itinerary-leaflet-popup",
+        maxWidth: 300
+      });
+      marker.addTo(markerLayer);
     });
 
     if (availablePlaces.length === 0) {
       map.setView([20, 0], 2);
     } else if (availablePlaces.length === 1) {
       const coordinates = availablePlaces[0].coordinates!;
-      map.setView([coordinates.lat, coordinates.lng], 13);
+      map.flyTo([coordinates.lat, coordinates.lng], 13, { duration: 0.55 });
     } else {
       const bounds = leaflet.latLngBounds(
         availablePlaces.map((place) => [place.coordinates!.lat, place.coordinates!.lng] as [number, number])
       );
-      map.fitBounds(bounds, { maxZoom: 13, padding: [56, 56] });
+      map.flyToBounds(bounds, { maxZoom: 13, padding: [72, 72], duration: 0.65 });
     }
 
     window.setTimeout(() => map.invalidateSize(), 40);
   }, [availablePlaces, mapReady, onSelectPlace, placesKey, routeKey, routeSegments, selectedPlaceId]);
 
   return (
-    <div className="relative h-[520px] min-h-[420px] overflow-hidden bg-[#d9ecf2] lg:h-[620px]">
+    <div className={`relative h-[520px] min-h-[420px] overflow-hidden bg-[#d9ecf2] lg:h-[620px] ${className}`}>
       <div ref={containerRef} className="leaflet-itinerary-map absolute inset-0" aria-label={labels.mapTitle} />
 
       {overlayTitle ? (
@@ -533,16 +1442,20 @@ function LeafletRouteMap({
         </div>
       ) : null}
 
-      <div className="absolute left-4 top-4 z-[450] rounded-[8px] border border-slate-200 bg-white/94 px-3 py-2 text-xs font-black text-slate-700 shadow-sm backdrop-blur">
-        <span className="inline-flex items-center gap-2">
-          <Navigation2 className="size-4 text-indigo-600" />
-          {viewLabel}
-        </span>
-      </div>
+      {showChrome ? (
+        <div className="absolute left-4 top-4 z-[450] rounded-[8px] border border-slate-200 bg-white/94 px-3 py-2 text-xs font-black text-slate-700 shadow-sm backdrop-blur">
+          <span className="inline-flex items-center gap-2">
+            <Navigation2 className="size-4 text-indigo-600" />
+            {viewLabel}
+          </span>
+        </div>
+      ) : null}
 
-      <div className="absolute bottom-4 left-4 z-[450] rounded-[8px] border border-slate-200 bg-white/92 px-3 py-2 text-[11px] font-bold text-slate-500 shadow-sm backdrop-blur">
-        {labels.dragToPan} - {labels.wheelToZoom}
-      </div>
+      {showChrome ? (
+        <div className="absolute bottom-4 left-4 z-[450] rounded-[8px] border border-slate-200 bg-white/92 px-3 py-2 text-[11px] font-bold text-slate-500 shadow-sm backdrop-blur">
+          {labels.dragToPan} - {labels.wheelToZoom}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -575,79 +1488,24 @@ function LiveBaseMap({
 function EmptyCanvas({ planning, labels }: { planning: boolean; labels: UIText }) {
   return (
     <section className="overflow-hidden rounded-[8px] border border-slate-200 bg-white shadow-[0_22px_70px_rgba(26,35,67,0.1)]">
-      <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="min-w-0">
+      <div className="relative">
+        <LiveBaseMap
+          labels={labels}
+          planning={planning}
+          overlayTitle={planning ? labels.emptyCanvasPlanningTitle : labels.emptyCanvasReadyTitle}
+          overlayBody={labels.emptyCanvasBody}
+        />
+        <div className="absolute left-4 top-4 z-[900] rounded-[8px] border border-slate-200 bg-white/94 p-4 shadow-[0_18px_48px_rgba(15,23,42,0.14)] backdrop-blur">
           <p className="flex items-center gap-2 text-xs font-black uppercase text-indigo-600">
             <MapPin className="size-3.5" />
             {labels.mapEyebrow}
           </p>
-          <h2 className="mt-1 truncate text-2xl font-black text-slate-950">{labels.mapTitle}</h2>
-          <p className="mt-1 line-clamp-2 text-sm font-semibold text-slate-500">{labels.emptyCanvasBody}</p>
+          <h2 className="mt-1 text-xl font-black text-slate-950">{labels.mapTitle}</h2>
+          <p className="mt-1 max-w-sm text-sm font-semibold leading-6 text-slate-500">{labels.emptyCanvasBody}</p>
         </div>
-        <button
-          type="button"
-          className="flex h-9 items-center gap-2 rounded-[8px] border border-slate-200 bg-white px-3 text-xs font-black text-slate-600"
-          title={labels.mapLayers}
-        >
-          <Layers className="size-4" />
-          {labels.mapLayers}
-        </button>
-      </div>
-
-      <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_300px]">
-        <div className="border-b border-slate-100 xl:border-b-0 xl:border-r">
-          <div className="flex flex-wrap items-center gap-2 px-4 py-3">
-            <span className="inline-flex items-center gap-2 rounded-full border border-indigo-300 bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-700">
-              <span className="size-2 rounded-full bg-indigo-600" />
-              {labels.fullTrip}
-            </span>
-            {[1, 2, 3].map((dayNumber) => (
-              <span
-                key={dayNumber}
-                className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-500"
-              >
-                <span className="size-2 rounded-full" style={{ backgroundColor: dayColor(dayNumber) }} />
-                {formatDay(labels, dayNumber)}
-              </span>
-            ))}
-          </div>
-
-          <LiveBaseMap
-            labels={labels}
-            planning={planning}
-            overlayTitle={planning ? labels.emptyCanvasPlanningTitle : labels.emptyCanvasReadyTitle}
-            overlayBody={labels.emptyCanvasBody}
-          />
+        <div className="absolute bottom-4 left-4 z-[900] rounded-[8px] border border-slate-200 bg-white/92 px-3 py-2 text-[11px] font-bold text-slate-500 shadow-sm backdrop-blur">
+          {labels.dragToPan} - {labels.wheelToZoom}
         </div>
-
-        <aside className="space-y-4 bg-slate-50/70 p-4">
-          <div className="rounded-[8px] border border-slate-200 bg-white p-4 shadow-sm">
-            <p className="text-xs font-black uppercase text-slate-400">{labels.selected}</p>
-            <h3 className="mt-1 text-lg font-black text-slate-950">{labels.emptyCanvasItinerary}</h3>
-            <p className="mt-2 text-xs font-semibold leading-5 text-slate-500">{labels.emptyCanvasBody}</p>
-            <div className="mt-4 grid grid-cols-3 gap-2">
-              {[labels.emptyCanvasAssumptions, labels.emptyCanvasCheckpoint, labels.emptyCanvasItinerary].map((label, index) => (
-                <div key={label} className="rounded-[8px] bg-slate-50 p-2 text-center">
-                  {index === 1 ? (
-                    <ShieldCheck className="mx-auto size-4 text-orange-500" />
-                  ) : (
-                    <CalendarDays className="mx-auto size-4 text-slate-500" />
-                  )}
-                  <p className="mt-1 truncate text-[10px] font-bold text-slate-500">{label}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="rounded-[8px] border border-slate-200 bg-white p-4 shadow-sm">
-            <p className="text-sm font-black text-slate-950">{labels.mapGuide}</p>
-            <div className="mt-3 space-y-2 text-xs font-semibold leading-5 text-slate-500">
-              <p>{labels.clickMarkers}</p>
-              <p>{labels.dragToPan}</p>
-              <p>{labels.wheelToZoom}</p>
-            </div>
-          </div>
-        </aside>
       </div>
     </section>
   );
@@ -726,7 +1584,10 @@ function ActivityRow({
 
 function DayCard({ day, assumptions, labels }: { day: ItineraryDay; assumptions: Assumption[]; labels: UIText }) {
   return (
-    <article className="min-w-[286px] rounded-[8px] border border-blue-200 bg-white p-3 shadow-[0_20px_48px_rgba(26,35,67,0.1)]">
+    <article
+      id={`day-plan-${day.dayNumber}`}
+      className="scroll-mt-28 rounded-[8px] border border-blue-200 bg-white p-3 shadow-[0_20px_48px_rgba(26,35,67,0.1)]"
+    >
       <div className="rounded-[8px] border border-blue-100 bg-gradient-to-br from-white to-blue-50 px-3 py-3 text-center">
         <div className="mx-auto flex size-8 items-center justify-center rounded-[8px] bg-white text-blue-700 shadow-sm">
           <CalendarDays className="size-4" />
@@ -882,16 +1743,13 @@ function InfluenceLayer({ assumptions, labels }: { assumptions: Assumption[]; la
 function LegacyItineraryMap({ selectedOption, labels }: { selectedOption: ItineraryOption; labels: UIText }) {
   const [view, setView] = useState<MapView>("all");
   const dayNumbers = selectedOption.days.map((day) => day.dayNumber);
-  const places = useMemo(
-    () => derivePlaces(selectedOption).map((place, sequence) => ({ ...place, sequence })),
-    [selectedOption]
-  );
-  const viewPlaces = places.filter((place) => view === "all" || place.dayNumber === view);
+  const places = useMemo(() => buildDisplayPlaces(selectedOption, labels), [selectedOption, labels]);
+  const viewPlaces = sequencedPlacesForView(places, selectedOption, view);
   const baseCamera = fitCamera(viewPlaces);
   const positionedPlaces = projectPlaces(viewPlaces, baseCamera, { zoomDelta: 0, offsetX: 0, offsetY: 0 });
   const unavailablePlaces = viewPlaces.filter((place) => !place.coordinates);
   const positionedById = buildPositionedLookup(positionedPlaces);
-  const structuredSegments = routeSegmentsForView(selectedOption, view).filter(
+  const structuredSegments = buildContinuousRouteSegments(selectedOption, viewPlaces, view, [], labels).filter(
     (segment) => positionedById.has(segment.fromPlaceId) && positionedById.has(segment.toPlaceId)
   );
   const routeSegments = structuredSegments.length > 0 ? structuredSegments : fallbackRouteSegments(positionedPlaces, labels);
@@ -1042,40 +1900,79 @@ function ItineraryMap({
   itinerary,
   selectedOption,
   warnings,
+  assumptions,
   onSelectOption,
-  labels
+  labels,
+  onOpenReview
 }: {
   itinerary: Itinerary;
   selectedOption: ItineraryOption;
   warnings: ConstraintWarning[];
+  assumptions: Assumption[];
   onSelectOption: (id: string) => void;
   labels: UIText;
+  onOpenReview?: (dayNumber?: number | null) => void;
 }) {
   const [view, setView] = useState<MapView>("all");
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
+  const [routeReasonExpanded, setRouteReasonExpanded] = useState(false);
+  const [attentionExpanded, setAttentionExpanded] = useState(false);
   const dayNumbers = selectedOption.days.map((day) => day.dayNumber);
-  const places = useMemo(
-    () => derivePlaces(selectedOption).map((place, sequence) => ({ ...place, sequence })),
-    [selectedOption]
-  );
-  const viewPlaces = places.filter((place) => view === "all" || place.dayNumber === view);
-  const viewPlacesKey = viewPlaces.map((place) => place.id).join("|");
+  const places = useMemo(() => buildDisplayPlaces(selectedOption, labels), [selectedOption, labels]);
+  const viewPlaces = sequencedPlacesForView(places, selectedOption, view);
+  const viewPlacesKey = mapPlacesKey(viewPlaces);
   const baseCamera = useMemo(() => fitCamera(viewPlaces), [viewPlacesKey]);
   const positionedPlaces = projectPlaces(viewPlaces, baseCamera, { zoomDelta: 0, offsetX: 0, offsetY: 0 });
   const unavailablePlaces = viewPlaces.filter((place) => !place.coordinates);
   const positionedById = buildPositionedLookup(positionedPlaces);
-  const structuredSegments = routeSegmentsForView(selectedOption, view).filter(
+  const continuousSegments = buildContinuousRouteSegments(selectedOption, viewPlaces, view, assumptions, labels);
+  const drawableSegments = continuousSegments.filter(
     (segment) => positionedById.has(segment.fromPlaceId) && positionedById.has(segment.toPlaceId)
   );
-  const routeSegments = structuredSegments.length > 0 ? structuredSegments : fallbackRouteSegments(positionedPlaces, labels);
+  const routeSegments = drawableSegments.length > 0 ? drawableSegments : fallbackRouteSegments(positionedPlaces, labels);
+  const allRouteSegments = continuousSegments.length > 0 ? continuousSegments : routeSegments;
   const activeDays = selectedOption.days.filter((day) => view === "all" || day.dayNumber === view);
   const selectedPlace = positionedPlaces.find((place) => place.id === selectedPlaceId) || positionedPlaces[0] || null;
   const totalWalkingKm = activeDays.reduce((sum, day) => sum + day.totalWalkingKm, 0);
   const totalTravelMinutes =
-    routeSegments.reduce((sum, segment) => sum + segment.estimatedTravelTimeMinutes, 0) ||
+    allRouteSegments.reduce((sum, segment) => sum + segment.estimatedTravelTimeMinutes, 0) ||
     activeDays.reduce((sum, day) => sum + day.totalTravelTimeMinutes, 0);
-  const totalDistanceKm = routeSegments.reduce((sum, segment) => sum + segment.distanceKm, 0);
+  const totalDistanceKm = allRouteSegments.reduce((sum, segment) => {
+    const from = positionedById.get(segment.fromPlaceId);
+    const to = positionedById.get(segment.toPlaceId);
+    return sum + routeDistance(segment, from, to);
+  }, 0);
   const relevantWarnings = warnings.filter((warning) => view === "all" || !warning.affectedDay || warning.affectedDay === view);
+  const estimatedSegmentCount = allRouteSegments.filter((segment) => routeGeometryStatus(segment) === "Estimated").length;
+  const missingRouteCount = allRouteSegments.filter((segment) => routeGeometryStatus(segment) === "Missing").length;
+  const verifiedRouteCount = allRouteSegments.filter((segment) => routeGeometryStatus(segment) === "Real").length;
+  const longestTransfer = allRouteSegments.reduce(
+    (longest, segment) => Math.max(longest, segment.estimatedTravelTimeMinutes),
+    0
+  );
+  const baseChanges = selectedOption.days.slice(1).filter((day, index) => {
+    const previous = selectedOption.days[index];
+    const previousArea = previous.accommodation?.area || "";
+    const nextArea = day.accommodation?.area || "";
+    return day.accommodation?.changeFromPreviousNight || (previousArea && nextArea && normalizedPlaceText(previousArea) !== normalizedPlaceText(nextArea));
+  }).length;
+  const openIssueCount = relevantWarnings.length + unavailablePlaces.length + missingRouteCount;
+  const timelineItems = buildTripTimelineItems(selectedOption, places);
+  const selectedDay = selectedPlace?.dayNumber
+    ? selectedOption.days.find((day) => day.dayNumber === selectedPlace.dayNumber) || null
+    : null;
+  const selectedHighlights = selectedPlaceHighlights(selectedOption, selectedPlace);
+  const selectedTimelineItem = selectedPlace?.dayNumber
+    ? timelineItems.find((item) => selectedPlace.dayNumber && item.startDay <= selectedPlace.dayNumber && item.endDay >= selectedPlace.dayNumber)
+    : null;
+  const transportModes = routeTransportModes(allRouteSegments, labels);
+  const routeInfluences = selectedOption.preferenceInfluences.slice(0, 3);
+  const routeQualityLabel =
+    allRouteSegments.length > 0 && verifiedRouteCount === allRouteSegments.length
+      ? labels.allRoutesVerified
+      : missingRouteCount > 0
+        ? `${missingRouteCount} ${labels.missingCoordinatesStatus}`
+        : `${estimatedSegmentCount} ${labels.estimatedRoutesStatus}`;
 
   useEffect(() => {
     setSelectedPlaceId(null);
@@ -1091,54 +1988,60 @@ function ItineraryMap({
     });
   }, [viewPlacesKey]);
 
-  return (
-    <section className="overflow-hidden rounded-[8px] border border-slate-200 bg-white shadow-[0_22px_70px_rgba(26,35,67,0.1)]">
-      <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="min-w-0">
-          <p className="flex items-center gap-2 text-xs font-black uppercase text-indigo-600">
-            <MapPin className="size-3.5" />
-            {labels.mapEyebrow}
-          </p>
-          <h2 className="mt-1 truncate text-2xl font-black text-slate-950">{labels.mapTitle}</h2>
-          <p className="mt-1 line-clamp-2 text-sm font-semibold text-slate-500">{selectedOption.fitSummary}</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {itinerary.options.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              onClick={() => onSelectOption(option.id)}
-              className={`rounded-[8px] border px-3 py-2 text-xs font-black transition ${
-                option.id === selectedOption.id
-                  ? "border-violet-300 bg-violet-600 text-white shadow-[0_12px_30px_rgba(124,58,237,0.25)]"
-                  : "border-slate-200 bg-white text-slate-600 hover:border-violet-200"
-              }`}
-            >
-              {option.title}
-            </button>
-          ))}
-          <button
-            type="button"
-            className="flex h-9 items-center gap-2 rounded-[8px] border border-slate-200 bg-white px-3 text-xs font-black text-slate-600"
-            title={labels.mapLayers}
-          >
-            <Layers className="size-4" />
-            {labels.mapLayers}
-          </button>
-        </div>
-      </div>
+  function handleTimelineSelect(item: TripTimelineItem) {
+    setView(item.startDay);
+    window.setTimeout(() => {
+      setSelectedPlaceId(item.placeId || viewPlaces.find((place) => place.dayNumber === item.startDay && place.coordinates)?.id || null);
+    }, 0);
+  }
 
-      <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_330px]">
-        <div className="border-b border-slate-100 xl:border-b-0 xl:border-r">
-          <div className="flex flex-wrap items-center gap-2 px-4 py-3">
+  return (
+    <section className="overflow-hidden rounded-[8px] border border-slate-200 bg-white shadow-[0_22px_70px_rgba(26,35,67,0.12)]">
+      <div className="relative">
+        <LeafletRouteMap
+          labels={labels}
+          places={viewPlaces}
+          routeSegments={routeSegments}
+          selectedPlaceId={selectedPlaceId}
+          onSelectPlace={setSelectedPlaceId}
+          viewLabel={view === "all" ? labels.fullTrip : typeof view === "number" ? formatDay(labels, view) : labels.fullTrip}
+          overlayTitle={positionedPlaces.length === 0 ? labels.locationsUnavailableTitle : undefined}
+          overlayBody={positionedPlaces.length === 0 ? labels.locationsUnavailableBody : undefined}
+          className="h-[calc(100vh-180px)] min-h-[680px] lg:h-[calc(100vh-170px)]"
+          showChrome={false}
+          onOpenReview={onOpenReview}
+        />
+
+        <div className="absolute left-4 top-4 z-[900] flex max-w-[calc(100%-32px)] flex-col gap-2 md:left-5 md:top-5">
+          <div className="flex w-fit max-w-full items-center gap-2 rounded-[8px] border border-slate-200 bg-white/94 p-2 shadow-[0_18px_48px_rgba(15,23,42,0.14)] backdrop-blur">
+            <div className="min-w-0 px-2">
+              <p className="text-[11px] font-black uppercase text-indigo-600">{labels.mapEyebrow}</p>
+              <h2 className="truncate text-base font-black text-slate-950 sm:text-lg">{itinerary.destination}</h2>
+            </div>
+            {itinerary.options.length > 1 ? (
+              <select
+                value={selectedOption.id}
+                onChange={(event) => onSelectOption(event.target.value)}
+                className="h-9 max-w-[210px] rounded-[8px] border border-slate-200 bg-white px-2 text-xs font-black text-slate-700 outline-none"
+              >
+                {itinerary.options.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.title}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+          </div>
+
+          <div className="flex flex-wrap gap-2">
             <button
               type="button"
               onClick={() => setView("all")}
-              className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-bold ${
-                view === "all" ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-slate-200 bg-white text-slate-600"
+              className={`inline-flex h-9 items-center gap-2 rounded-full border px-3 text-xs font-black shadow-sm backdrop-blur ${
+                view === "all" ? "border-indigo-300 bg-indigo-600 text-white" : "border-slate-200 bg-white/92 text-slate-700"
               }`}
             >
-              <span className="size-2 rounded-full bg-slate-500" />
+              <span className="size-2 rounded-full bg-current opacity-80" />
               {labels.fullTrip}
             </button>
             {dayNumbers.map((dayNumber) => (
@@ -1146,10 +2049,8 @@ function ItineraryMap({
                 key={dayNumber}
                 type="button"
                 onClick={() => setView(dayNumber)}
-                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-bold ${
-                  view === dayNumber
-                    ? "border-indigo-300 bg-indigo-50 text-indigo-700"
-                    : "border-slate-200 bg-white text-slate-600"
+                className={`inline-flex h-9 items-center gap-2 rounded-full border px-3 text-xs font-black shadow-sm backdrop-blur ${
+                  view === dayNumber ? "border-indigo-300 bg-indigo-600 text-white" : "border-slate-200 bg-white/92 text-slate-700"
                 }`}
               >
                 <span className="size-2 rounded-full" style={{ backgroundColor: dayColor(dayNumber) }} />
@@ -1157,131 +2058,236 @@ function ItineraryMap({
               </button>
             ))}
           </div>
-
-          <LeafletRouteMap
-            labels={labels}
-            places={viewPlaces}
-            routeSegments={routeSegments}
-            selectedPlaceId={selectedPlaceId}
-            onSelectPlace={setSelectedPlaceId}
-            viewLabel={view === "all" ? labels.fullTrip : typeof view === "number" ? formatDay(labels, view) : labels.fullTrip}
-            overlayTitle={positionedPlaces.length === 0 ? labels.locationsUnavailableTitle : undefined}
-            overlayBody={positionedPlaces.length === 0 ? labels.locationsUnavailableBody : undefined}
-          />
         </div>
 
-        <aside className="space-y-4 bg-slate-50/70 p-4">
-          <div className="rounded-[8px] border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-xs font-black uppercase text-slate-400">{labels.selected}</p>
-                <h3 className="mt-1 line-clamp-2 text-lg font-black text-slate-950">{selectedOption.title}</h3>
-              </div>
-              <span className="shrink-0 rounded-full bg-violet-50 px-2 py-1 text-[11px] font-bold text-violet-700">
-                {itinerary.currency} {selectedOption.estimatedTotalCostEur}
-              </span>
-            </div>
-            <div className="mt-4 grid grid-cols-3 gap-2">
-              <div className="rounded-[8px] bg-slate-50 p-2 text-center">
-                <CalendarDays className="mx-auto size-4 text-slate-500" />
-                <p className="mt-1 text-xs font-black text-slate-900">{activeDays.length}</p>
-                <p className="text-[10px] font-bold text-slate-400">{labels.dayPlan}</p>
-              </div>
-              <div className="rounded-[8px] bg-slate-50 p-2 text-center">
-                <MapPin className="mx-auto size-4 text-slate-500" />
-                <p className="mt-1 text-xs font-black text-slate-900">{positionedPlaces.length}</p>
-                <p className="text-[10px] font-bold text-slate-400">{labels.keyPlaces}</p>
-              </div>
-              <div className="rounded-[8px] bg-slate-50 p-2 text-center">
-                <Timer className="mx-auto size-4 text-slate-500" />
-                <p className="mt-1 text-xs font-black text-slate-900">{formatMinutes(totalTravelMinutes, labels)}</p>
-                <p className="text-[10px] font-bold text-slate-400">{labels.travel}</p>
-              </div>
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <div className="rounded-[8px] border border-slate-100 bg-white p-2">
-                <p className="text-[10px] font-black uppercase text-slate-400">{labels.walk}</p>
-                <p className="text-sm font-black text-slate-900">{totalWalkingKm.toFixed(1)} km</p>
-              </div>
-              <div className="rounded-[8px] border border-slate-100 bg-white p-2">
-                <p className="text-[10px] font-black uppercase text-slate-400">{labels.routeOverview}</p>
-                <p className="text-sm font-black text-slate-900">{totalDistanceKm.toFixed(1)} km</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-[8px] border border-slate-200 bg-white p-4 shadow-sm">
-            <p className="text-sm font-black text-slate-950">{labels.routeOverview}</p>
-            {routeSegments.length === 0 ? (
-              <p className="mt-2 text-xs font-semibold text-slate-500">{labels.noRouteSegments}</p>
-            ) : (
-              <div className="mt-3 space-y-2">
-                {routeSegments.slice(0, 5).map((segment, index) => {
-                  const from = positionedById.get(segment.fromPlaceId);
-                  const to = positionedById.get(segment.toPlaceId);
-
-                  return (
-                    <div key={routeSegmentRenderKey(segment, index)} className="rounded-[8px] border border-slate-100 bg-slate-50 p-2 text-xs font-semibold text-slate-600">
-                      <div className="flex items-center gap-2 font-black text-slate-800">
-                        <Bus className="size-3.5 text-indigo-600" />
-                        <span className="truncate">
-                          {from?.title || segment.fromPlaceId} - {to?.title || segment.toPlaceId}
-                        </span>
-                      </div>
-                      <p className="mt-1 line-clamp-2">
-                        {segment.transportMode} - {formatMinutes(segment.estimatedTravelTimeMinutes, labels)}
-                        {segment.notes ? ` - ${segment.notes}` : ""}
-                      </p>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {selectedOption.preferenceInfluences.length > 0 ? (
-            <div className="rounded-[8px] border border-violet-100 bg-violet-50/70 p-4 shadow-sm">
-              <p className="text-sm font-black text-violet-950">{labels.learnedPreferenceInfluence}</p>
-              <div className="mt-3 space-y-2">
-                {selectedOption.preferenceInfluences.slice(0, 3).map((item) => (
-                  <div key={item.preferenceId} className="rounded-[8px] bg-white/80 p-2 text-xs font-semibold text-violet-900">
-                    <p className="font-black">{item.preference}</p>
-                    <p className="mt-1 leading-5 opacity-75">{item.influence}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {unavailablePlaces.length > 0 || relevantWarnings.length > 0 ? (
-            <div className="rounded-[8px] border border-amber-100 bg-amber-50 p-4 shadow-sm">
-              <p className="text-sm font-black text-amber-900">{labels.partialLocationWarning}</p>
-              {unavailablePlaces.length > 0 ? (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {unavailablePlaces.slice(0, 8).map((place) => (
-                    <span key={place.id} className="rounded-full bg-white px-2 py-1 text-[11px] font-bold text-amber-700">
-                      {place.title}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-              {relevantWarnings.slice(0, 2).map((warning) => (
-                <p key={warning.id} className="mt-2 text-xs font-semibold leading-5 text-amber-800">
-                  {warning.message}
+        <div className="absolute right-4 top-4 z-[900] hidden max-w-[520px] flex-wrap justify-end gap-2 lg:flex">
+          {[
+            { label: labels.tripDuration, value: `${itinerary.durationDays} ${labels.dayPlan}`, icon: CalendarDays },
+            { label: labels.totalDistance, value: `${totalDistanceKm.toFixed(1)} km`, icon: Route },
+            { label: labels.travelTime, value: formatMinutes(totalTravelMinutes, labels), icon: Timer },
+            { label: labels.walk, value: `${totalWalkingKm.toFixed(1)} km`, icon: Footprints }
+          ].map((metric) => {
+            const Icon = metric.icon;
+            return (
+              <div
+                key={metric.label}
+                className="min-w-[118px] rounded-[8px] border border-slate-200 bg-white/94 px-3 py-2 shadow-[0_14px_38px_rgba(15,23,42,0.12)] backdrop-blur"
+              >
+                <p className="flex items-center gap-1.5 text-[10px] font-black uppercase text-slate-400">
+                  <Icon className="size-3.5" />
+                  {metric.label}
                 </p>
+                <p className="mt-1 text-xs font-black text-slate-950">{metric.value}</p>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="absolute left-4 top-[112px] z-[900] hidden rounded-full border border-slate-200 bg-white/94 px-3 py-2 text-xs font-semibold text-slate-700 shadow-[0_14px_38px_rgba(15,23,42,0.12)] backdrop-blur md:left-5 lg:block">
+          <span className={`mr-2 inline-block size-2 rounded-full ${estimatedSegmentCount === 0 && missingRouteCount === 0 ? "bg-emerald-500" : "bg-amber-500"}`} />
+          {routeQualityLabel}
+        </div>
+
+        <div className="absolute right-4 top-28 z-[900] hidden w-[300px] rounded-[8px] border border-slate-200 bg-white/94 p-3 shadow-[0_16px_44px_rgba(15,23,42,0.12)] backdrop-blur xl:block">
+          <p className="text-[11px] font-black uppercase text-slate-400">{labels.routeSummary}</p>
+          <div className="mt-3 space-y-2">
+            {[
+              { label: labels.longestTransfer, value: formatMinutes(longestTransfer, labels), icon: Bus },
+              { label: labels.baseChanges, value: String(baseChanges), icon: Bed },
+              { label: labels.estimatedSegments, value: String(estimatedSegmentCount), icon: Route },
+              { label: labels.openIssues, value: String(openIssueCount), icon: AlertTriangle }
+            ].map((item) => {
+              const Icon = item.icon;
+              return (
+                <div key={item.label} className="flex items-center justify-between gap-3 text-xs font-bold text-slate-600">
+                  <span className="inline-flex min-w-0 items-center gap-2">
+                    <Icon className="size-3.5 shrink-0 text-slate-400" />
+                    <span className="truncate">{item.label}</span>
+                  </span>
+                  <span className={item.label === labels.openIssues && openIssueCount > 0 ? "font-black text-rose-600" : "font-black text-slate-950"}>
+                    {item.value}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <button
+            type="button"
+            onClick={() => onOpenReview?.(null)}
+            className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-[8px] border border-indigo-200 bg-indigo-50 text-xs font-black text-indigo-700 transition hover:bg-indigo-100"
+          >
+            {labels.fixIssues}
+          </button>
+        </div>
+
+        {transportModes.length > 0 ? (
+          <div className="absolute right-4 top-[330px] z-[900] hidden rounded-[8px] border border-slate-200 bg-white/94 p-3 shadow-[0_16px_44px_rgba(15,23,42,0.12)] backdrop-blur xl:block">
+            <p className="text-[11px] font-black uppercase text-slate-400">{labels.transportLegend}</p>
+            <div className="mt-2 space-y-2">
+              {transportModes.map((mode) => (
+                <div key={mode.label} className="flex items-center gap-2 text-xs font-bold text-slate-700">
+                  <span
+                    className="h-0.5 w-8 rounded-full"
+                    style={{
+                      backgroundColor: mode.color,
+                      borderTop: mode.dashArray ? `2px dashed ${mode.color}` : undefined
+                    }}
+                  />
+                  <span className="max-w-28 truncate">{mode.label}</span>
+                </div>
               ))}
             </div>
-          ) : null}
+          </div>
+        ) : null}
 
-          <div className="rounded-[8px] border border-slate-200 bg-white p-4 shadow-sm">
-            <p className="text-sm font-black text-slate-950">{labels.mapGuide}</p>
-            <div className="mt-3 space-y-2 text-xs font-semibold leading-5 text-slate-500">
-              <p>{labels.clickMarkers}</p>
-              <p>{labels.dragToPan}</p>
-              <p>{labels.wheelToZoom}</p>
+        {selectedPlace ? (
+          <div className="absolute left-4 top-[150px] z-[900] w-[min(340px,calc(100%-32px))] rounded-[8px] border border-slate-200 bg-white/96 p-4 shadow-[0_22px_70px_rgba(15,23,42,0.2)] backdrop-blur md:left-5 md:top-[150px]">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[11px] font-black uppercase text-indigo-600">
+                  {selectedTimelineItem ? dayRangeLabel(labels, selectedTimelineItem.startDay, selectedTimelineItem.endDay) : selectedDay ? formatDay(labels, selectedDay.dayNumber) : labels.fullTrip}
+                </p>
+                <h3 className="mt-1 line-clamp-2 text-xl font-black text-slate-950">{selectedPlace.title}</h3>
+                <p className="mt-1 truncate text-xs font-bold text-slate-500">{selectedPlace.location}</p>
+              </div>
+              <div className="flex size-12 shrink-0 items-center justify-center rounded-[8px] border-2 bg-gradient-to-br from-orange-100 via-blue-100 to-violet-100 text-sm font-black text-slate-800 shadow-inner" style={{ borderColor: dayColor(selectedPlace.dayNumber) }}>
+                {selectedPlace.markerLabel}
+              </div>
+            </div>
+            <p className="mt-3 line-clamp-3 text-sm font-semibold leading-6 text-slate-600">
+              {selectedDay?.theme || selectedOption.fitSummary}
+            </p>
+            {selectedHighlights.length > 0 ? (
+              <div className="mt-3 border-t border-slate-100 pt-3">
+                <p className="text-[11px] font-black uppercase text-slate-400">{labels.highlights}</p>
+                <div className="mt-2 space-y-1.5">
+                  {selectedHighlights.map((activity) => (
+                    <div key={activity.id} className="flex items-center justify-between gap-3 text-xs font-semibold text-slate-600">
+                      <span className="truncate">{activity.title}</span>
+                      <span className="shrink-0 rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-black text-slate-500">{activity.time}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => onOpenReview?.(selectedPlace.dayNumber)}
+              className="mt-4 flex h-10 w-full items-center justify-center gap-2 rounded-[8px] border border-indigo-200 bg-indigo-50 text-sm font-black text-indigo-700 transition hover:border-indigo-300 hover:bg-indigo-100"
+            >
+              {labels.openInReviewPlanning}
+            </button>
+          </div>
+        ) : null}
+
+        {unavailablePlaces.length > 0 || relevantWarnings.length > 0 || estimatedSegmentCount > 0 ? (
+          <div className="absolute bottom-28 right-4 z-[900] hidden w-[min(320px,calc(100%-32px))] rounded-[8px] border border-amber-200 bg-amber-50/95 p-3 text-xs font-semibold leading-5 text-amber-900 shadow-[0_16px_44px_rgba(15,23,42,0.12)] backdrop-blur lg:block">
+            <button
+              type="button"
+              onClick={() => setAttentionExpanded((current) => !current)}
+              className="flex w-full items-center justify-between gap-3 text-left"
+            >
+              <span>
+                <span className="block font-black uppercase text-amber-700">{labels.attentionNeeded}</span>
+                <span className="mt-1 block text-[11px] text-amber-800">
+                  {openIssueCount} {labels.openIssues} · {estimatedSegmentCount} {labels.estimatedSegments}
+                </span>
+              </span>
+              <ChevronDown className={`size-4 shrink-0 transition ${attentionExpanded ? "rotate-180" : ""}`} />
+            </button>
+            {attentionExpanded ? (
+              <>
+                <div className="mt-2 max-h-36 space-y-2 overflow-y-auto pr-1">
+                  {unavailablePlaces.length > 0 ? <p>{labels.missingCoordinates}</p> : null}
+                  {estimatedSegmentCount > 0 ? <p>{labels.uncertainTransportAssumption}</p> : null}
+                  {relevantWarnings.slice(0, 2).map((warning) => (
+                    <p key={warning.id}>{warning.message}</p>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onOpenReview?.(null)}
+                  className="mt-3 text-xs font-black text-indigo-700"
+                >
+                  {labels.viewAllIssues}
+                </button>
+              </>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="absolute bottom-28 left-4 z-[900] hidden w-[min(320px,calc(100%-32px))] rounded-[8px] border border-slate-200 bg-white/94 p-3 shadow-[0_16px_44px_rgba(15,23,42,0.12)] backdrop-blur lg:block">
+          <button
+            type="button"
+            onClick={() => setRouteReasonExpanded((current) => !current)}
+            className="flex w-full items-center justify-between gap-3 text-left"
+          >
+            <span>
+              <span className="block text-[11px] font-black uppercase text-indigo-600">{labels.whyThisRoute}</span>
+              <span className="mt-1 line-clamp-1 block text-xs font-semibold text-slate-600">
+                {routeInfluences[0]?.influence || selectedOption.fitSummary}
+              </span>
+            </span>
+            <ChevronDown className={`size-4 shrink-0 text-slate-400 transition ${routeReasonExpanded ? "rotate-180" : ""}`} />
+          </button>
+          {routeReasonExpanded ? (
+            <>
+              <p className="mt-2 text-xs font-semibold leading-5 text-slate-600">
+                {routeInfluences[0]?.influence || selectedOption.fitSummary}
+              </p>
+              <div className="mt-3 flex max-h-24 flex-wrap gap-1.5 overflow-y-auto pr-1">
+                {routeInfluences.map((influence) => (
+                  <span key={influence.preferenceId} className="rounded-full border border-indigo-100 bg-indigo-50 px-2 py-1 text-[11px] font-bold text-indigo-700">
+                    {influence.preference}
+                  </span>
+                ))}
+                {routeInfluences.length === 0
+                  ? assumptions
+                      .filter((assumption) => assumption.status !== "Rejected")
+                      .slice(0, 3)
+                      .map((assumption) => (
+                        <span key={assumption.id} className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-600">
+                          {assumption.label}
+                        </span>
+                      ))
+                  : null}
+              </div>
+              <button
+                type="button"
+                onClick={() => onOpenReview?.(null)}
+                className="mt-4 text-xs font-black text-indigo-700"
+              >
+                {labels.fixIssues}
+              </button>
+            </>
+          ) : null}
+        </div>
+
+        <div className="absolute inset-x-0 bottom-0 z-[900] border-t border-white/70 bg-white/92 px-3 py-3 shadow-[0_-18px_44px_rgba(15,23,42,0.12)] backdrop-blur">
+          <div className="mx-auto flex max-w-[1180px] items-center gap-2">
+            <p className="hidden min-w-fit px-2 text-[11px] font-black uppercase text-slate-400 md:block">{labels.tripTimeline}</p>
+            <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto pb-1 planner-scrollbar">
+              {timelineItems.map((item) => {
+                const active = view !== "all" && typeof view === "number" && view >= item.startDay && view <= item.endDay;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => handleTimelineSelect(item)}
+                    className={`min-w-[170px] rounded-[8px] border px-4 py-2 text-left transition ${
+                      active
+                        ? "border-emerald-400 bg-emerald-50 text-emerald-900 shadow-sm"
+                        : "border-slate-200 bg-white text-slate-700 hover:border-indigo-200"
+                    }`}
+                  >
+                    <p className="text-xs font-black text-indigo-700">{dayRangeLabel(labels, item.startDay, item.endDay)}</p>
+                    <p className="mt-1 truncate text-sm font-black">{item.title}</p>
+                  </button>
+                );
+              })}
             </div>
           </div>
-        </aside>
+        </div>
       </div>
     </section>
   );
@@ -1457,13 +2463,18 @@ export function ItineraryCanvas({
   selectedOptionId,
   onSelectOption,
   planning,
-  labels
+  labels,
+  mode = "map",
+  onOpenReview
 }: ItineraryCanvasProps) {
   if (!itinerary) {
+    if (mode === "review") {
+      return <ConstraintWarnings warnings={warnings} labels={labels} />;
+    }
+
     return (
       <div className="space-y-4">
         <EmptyCanvas planning={planning} labels={labels} />
-        <ConstraintWarnings warnings={warnings} labels={labels} />
       </div>
     );
   }
@@ -1473,23 +2484,28 @@ export function ItineraryCanvas({
     itinerary.options.find((option) => option.id === itinerary.selectedOptionId) ||
     itinerary.options[0];
 
-  return (
-    <div className="space-y-4">
+  if (mode === "map") {
+    return (
       <ItineraryMap
         itinerary={itinerary}
         selectedOption={selectedOption}
         warnings={warnings}
+        assumptions={assumptions}
         onSelectOption={onSelectOption}
         labels={labels}
+        onOpenReview={onOpenReview}
       />
+    );
+  }
 
-      <Panel title={labels.planningCanvas} eyebrow={labels.plannerJsonEyebrow} icon={<Route className="size-4" />}>
+  return (
+    <div className="space-y-4">
+      <Panel title={labels.reviewPlanningWorkspace} eyebrow={labels.reviewPlanningEyebrow} icon={<Route className="size-4" />}>
         <div className="canvas-grid relative overflow-hidden rounded-[8px] border border-slate-200 bg-white/78 p-4">
-          <div className="pointer-events-none absolute left-12 right-12 top-[310px] hidden border-t border-dashed border-blue-300 xl:block" />
           <OptionHeader itinerary={itinerary} selectedOption={selectedOption} onSelectOption={onSelectOption} labels={labels} />
           <InfluenceLayer assumptions={assumptions} labels={labels} />
 
-          <div className="mt-4 flex gap-4 overflow-x-auto px-1 pb-2 planner-scrollbar">
+          <div className="mt-4 grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
             {selectedOption.days.map((day) => (
               <DayCard key={day.dayNumber} day={day} assumptions={assumptions} labels={labels} />
             ))}

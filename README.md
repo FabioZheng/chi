@@ -2,7 +2,7 @@
 
 A Next.js + TypeScript research prototype for ambiguity-first travel planning. The app is designed for short, casual prompts such as "Italy for one week", "somewhere warm", or "cheap trip to Europe". Instead of starting with a static preference form, it detects hidden planning trade-offs, asks lightweight checkpoint questions, learns a controllable preference profile, reviews assumptions, validates input consistency, then generates a map-based itinerary.
 
-For full operating instructions, workflow details, and agent explanations, see [docs/USER_GUIDE.md](docs/USER_GUIDE.md). For a paper-style project explanation, see `docs/hidden_preference_elicitation_project_abstract.docx`.
+For full operating instructions, workflow details, and agent explanations, see [docs/USER_GUIDE.md](docs/USER_GUIDE.md). For a scientific paper-style explanation of the research workflow and innovation points, see [docs/SCIENTIFIC_DOCUMENTATION.md](docs/SCIENTIFIC_DOCUMENTATION.md). For the earlier abstract document, see `docs/hidden_preference_elicitation_project_abstract.docx`.
 
 ## Setup
 
@@ -14,6 +14,8 @@ pnpm dev
 Open [http://localhost:3000](http://localhost:3000).
 
 ## `.env` Instructions
+
+Copy `.env.example` to `.env`, then fill in the keys you need. `.env` is the single local configuration file for this prototype and is ignored by git.
 
 Configure `.env` with OpenRouter:
 
@@ -28,6 +30,16 @@ OPENROUTER_APP_NAME=Assumption-Aware Agent Planner
 OpenAI remains available only if you explicitly set `LLM_PROVIDER=openai` and provide an `OPENAI_API_KEY`.
 
 The API routes intentionally call real LLM providers. There is no silent mock fallback; missing keys surface as route errors in the UI.
+
+### Optional Google Maps Routing
+
+For verified map routing, paste a temporary Google Maps Platform key into `.env`:
+
+```bash
+GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
+```
+
+The server uses Google Geocoding API and Routes API when this key is present. Keep the key server-side; the app does not need a `NEXT_PUBLIC_` Google key for routing. If routing fails or coordinates are uncertain, the map shows dashed estimated segments instead of solid real routes. Do not commit `.env`; it is ignored by git.
 
 ## Deploying On Vercel
 
@@ -46,6 +58,7 @@ OPENROUTER_API_KEY=your_openrouter_key
 OPENROUTER_MODEL=openai/gpt-4.1-mini
 OPENROUTER_SITE_URL=https://your-vercel-domain.vercel.app
 OPENROUTER_APP_NAME=Assumption-Aware Agent Planner
+GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
 ```
 
 Do not commit `.env`; use `.env.example` as the safe template.

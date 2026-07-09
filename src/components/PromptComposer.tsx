@@ -3,11 +3,22 @@
 import { useRef, useState } from "react";
 import { Loader2, SendHorizontal, Sparkles } from "lucide-react";
 
-type PromptStats = {
-  assumptions: number;
-  missing: number;
-  highImpact: number;
-  memory: number;
+export type PromptStatusChipItem = {
+  id: string;
+  title: string;
+  detail?: string;
+  status?: string;
+  onSelect?: () => void;
+};
+
+export type PromptStatusChip = {
+  id: string;
+  label: string;
+  title: string;
+  items: PromptStatusChipItem[];
+  emptyText: string;
+  clickHint: string;
+  onClick: () => void;
 };
 
 type PromptComposerProps = {
@@ -17,14 +28,10 @@ type PromptComposerProps = {
   analyzing: boolean;
   planning: boolean;
   canGenerate: boolean;
-  stats: PromptStats;
+  chips: PromptStatusChip[];
   labels: {
     promptPlaceholder: string;
     generate: string;
-    assumptionsInferred: string;
-    missingPreferences: string;
-    highImpactUnresolved: string;
-    memoryApplied: string;
     promptTooShort: string;
     examplesLabel: string;
     examples: readonly string[];
@@ -38,19 +45,14 @@ export function PromptComposer({
   analyzing,
   planning,
   canGenerate,
-  stats,
+  chips,
   labels
 }: PromptComposerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [attemptedSubmit, setAttemptedSubmit] = useState(false);
-  const chips = [
-    { label: `${stats.assumptions} ${labels.assumptionsInferred}`, show: stats.assumptions > 0 },
-    { label: `${stats.missing} ${labels.missingPreferences}`, show: stats.missing > 0 },
-    { label: `${stats.highImpact} ${labels.highImpactUnresolved}`, show: stats.highImpact > 0 },
-    { label: `${stats.memory} ${labels.memoryApplied}`, show: stats.memory > 0 }
-  ].filter((chip) => chip.show);
+  const visibleChips = chips.filter((chip) => chip.items.length > 0);
   const hasPrompt = prompt.trim().length >= 4;
-  const showExamples = prompt.trim().length === 0 && chips.length === 0 && !analyzing && !planning;
+  const showExamples = prompt.trim().length === 0 && visibleChips.length === 0 && !analyzing && !planning;
 
   function focusPrompt() {
     inputRef.current?.focus();
@@ -112,14 +114,9 @@ export function PromptComposer({
           {attemptedSubmit && !hasPrompt ? (
             <span className="hidden shrink-0 text-xs font-bold text-rose-600 md:inline">{labels.promptTooShort}</span>
           ) : null}
-          <div className="hidden min-w-0 flex-wrap items-center gap-1 lg:flex">
-            {chips.map((chip) => (
-              <span
-                key={chip.label}
-                className="rounded-full border border-indigo-100 bg-white px-2 py-1 text-[11px] font-semibold text-indigo-700"
-              >
-                {chip.label}
-              </span>
+          <div className="hidden min-w-0 flex-wrap items-center gap-1 md:flex">
+            {visibleChips.map((chip) => (
+              <StatusChip key={chip.id} chip={chip} />
             ))}
           </div>
         </div>
@@ -160,5 +157,60 @@ export function PromptComposer({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function StatusChip({ chip }: { chip: PromptStatusChip }) {
+  return (
+    <div className="group relative">
+      <button
+        type="button"
+        onClick={chip.onClick}
+        className="rounded-full border border-indigo-100 bg-white px-2 py-1 text-[11px] font-semibold text-indigo-700 transition hover:border-indigo-200 hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+      >
+        {chip.label}
+      </button>
+      <div className="pointer-events-none invisible absolute bottom-full left-1/2 z-[1300] mb-2 w-80 -translate-x-1/2 rounded-[8px] border border-slate-200 bg-white p-3 text-left opacity-0 shadow-[0_18px_52px_rgba(15,23,42,0.22)] transition group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100">
+        <div className="absolute -bottom-2 left-1/2 size-4 -translate-x-1/2 rotate-45 border-b border-r border-slate-200 bg-white" />
+        <p className="text-[11px] font-black uppercase text-indigo-600">{chip.title}</p>
+        <div className="mt-2 max-h-64 space-y-1.5 overflow-y-auto pr-1 planner-scrollbar">
+          {chip.items.length === 0 ? (
+            <p className="rounded-[8px] bg-slate-50 p-2 text-xs font-semibold text-slate-500">{chip.emptyText}</p>
+          ) : (
+            chip.items.map((item) => {
+              const content = (
+                <>
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="line-clamp-2 text-xs font-black text-slate-900">{item.title}</p>
+                    {item.status ? (
+                      <span className="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-black text-slate-500">
+                        {item.status}
+                      </span>
+                    ) : null}
+                  </div>
+                  {item.detail ? <p className="mt-1 line-clamp-3 text-[11px] font-semibold leading-4 text-slate-500">{item.detail}</p> : null}
+                </>
+              );
+
+              return item.onSelect ? (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={item.onSelect}
+                  className="w-full rounded-[8px] border border-slate-100 bg-white p-2 text-left transition hover:border-indigo-200 hover:bg-indigo-50"
+                >
+                  {content}
+                </button>
+              ) : (
+                <div key={item.id} className="rounded-[8px] border border-slate-100 bg-white p-2">
+                  {content}
+                </div>
+              );
+            })
+          )}
+        </div>
+        <p className="mt-2 border-t border-slate-100 pt-2 text-[11px] font-bold text-slate-400">{chip.clickHint}</p>
+      </div>
+    </div>
   );
 }

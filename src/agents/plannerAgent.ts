@@ -73,10 +73,24 @@ Return JSON with:
             "dayNumber": 1,
             "fromPlaceId": "place-a",
             "toPlaceId": "place-b",
+            "fromStopId": "place-a",
+            "toStopId": "place-b",
+            "fromCoordinates": null,
+            "toCoordinates": null,
             "transportMode": "metro",
             "estimatedTravelTimeMinutes": 20,
+            "durationSeconds": 1200,
             "distanceKm": 4.5,
-            "notes": "Brief movement note."
+            "distanceMeters": 4500,
+            "encodedPolyline": null,
+            "provider": "fallback_estimated",
+            "geometryStatus": "Estimated",
+            "confidence": 0.72,
+            "routeStatus": "Estimated",
+            "reason": "Metro is preferred because the active budget preference favors low-cost transport.",
+            "relatedPreference": "budget-friendly local transport",
+            "notes": "Brief movement note.",
+            "warnings": ["Exact route geometry must be verified by the routing provider."]
           }
         ],
         "days": [
@@ -137,7 +151,11 @@ Return JSON with:
 Generate 2 itinerary options when feasible.
 Each day should include 2 to 6 activities, alternatives, realistic pacing notes, estimated walking, estimated cost in EUR, transit time, booking risk, opening-hour risk, and preference fit.
 Each activity should include coordinates when reasonably knowable. Use approximate coordinates for well-known places or neighborhoods. If coordinates are not knowable, set coordinates to null and include locationUnavailableReason.
-Each option should include mapPlaces and routeSegments derived from the itinerary activities, not hard-coded examples. Route segments should connect the planned movement between places and include transport mode, time, burden-relevant notes, and dayNumber.
+Each option should include mapPlaces and routeSegments derived from the itinerary activities, not hard-coded examples. Route segments should connect the planned movement between places and include fromStopId, toStopId, transport mode, rough time, rough distance, confidence, routeStatus, reason, relatedPreference, burden-relevant notes, warnings, and dayNumber.
+Use routeStatus exactly as one of: "Real", "Estimated", "Missing". Use "Real" only when you are confident the segment reflects a realistic known route. Use "Estimated" for approximate coordinate-based or planner-estimated movement. Use "Missing" when a route should exist but coordinates or routing detail are unavailable.
+For route provider fields, use provider "fallback_estimated", geometryStatus "Estimated", encodedPolyline null, and routeStatus "Estimated" unless exact external routing geometry is already available. The server may later replace these with provider "google_routes", geometryStatus "Real", and an encodedPolyline from Google Routes API.
+Represent the itinerary as a continuous route. Include transport between stops within the same day. Include accommodation/base transitions when relevant: base to first stop, last stop back to base, and inter-day/base changes. If accommodation coordinates are unknown, include a base or area as an explicit estimated/assumed place and explain that in route notes.
+Assign dayNumber on every mapPlace that belongs to a specific day. For same-city itineraries, still include day-specific mapPlaces or activity coordinates for each day; do not omit day map data just because the traveler sleeps in the same city.
 Every routeSegment fromPlaceId and toPlaceId must exactly match an id from mapPlaces or an activity id in the same itinerary option. If a route endpoint is unknown, omit that route segment instead of returning an empty string.
 Each option should include costBreakdown with accommodation, transport, food, attractions, localTransit, optionalActivities, and other when relevant. Include per-day and total estimates where possible.
 Each day should include costBreakdown where possible and accommodation describing where the traveler sleeps that night and whether it changes from the previous night.
