@@ -397,6 +397,26 @@ function normalizedLocationStatus(input: unknown, hasCoordinates: boolean): Loca
 export const ImpactSchema = z.enum(["Low", "Medium", "High"]);
 export const LanguageSchema = z.enum(["en", "zh"]);
 
+export const AgentNameSchema = z.enum([
+  "Conflict Detector Agent",
+  "Preference Probe Agent",
+  "Preference Agent",
+  "Assumption Critic Agent",
+  "Input Consistency Agent",
+  "Planner Agent",
+  "Constraint Checker Agent",
+  "Budget Manager Agent",
+  "Route Mobility Agent",
+  "Pace Feasibility Agent",
+  "Presentation Agent",
+  "Memory Agent"
+]);
+
+function normalizedSourceAgent(input: unknown): z.infer<typeof AgentNameSchema> | undefined {
+  const parsed = AgentNameSchema.safeParse(input);
+  return parsed.success ? parsed.data : undefined;
+}
+
 export const PreferenceCategorySchema = z.enum([
   "budget",
   "pace",
@@ -441,7 +461,8 @@ export const AssumptionSchema = z.preprocess((input) => {
     source: normalizedSource(record.source),
     confidence: normalizedConfidence(record.confidence ?? record.confidenceScore ?? record.confidence_score),
     status: normalizedStatus(record.status),
-    rationale: asText(record.rationale ?? record.reason ?? record.why ?? record.explanation, "Detected from the prompt.")
+    rationale: asText(record.rationale ?? record.reason ?? record.why ?? record.explanation, "Detected from the prompt."),
+    sourceAgent: normalizedSourceAgent(record.sourceAgent)
   };
 }, z.object({
   id: z.string().min(1),
@@ -451,7 +472,8 @@ export const AssumptionSchema = z.preprocess((input) => {
   source: PreferenceSourceSchema,
   confidence: z.number().min(0).max(1),
   status: AssumptionStatusSchema,
-  rationale: z.string().min(1)
+  rationale: z.string().min(1),
+  sourceAgent: AgentNameSchema.optional()
 }));
 
 export const MissingPreferenceSchema = z.preprocess((input) => {
@@ -579,7 +601,8 @@ export const DetectedConflictSchema = z.preprocess((input) => {
       "The planner needs to uncover the traveler's preferred trade-off."
     ),
     confidence: normalizedConfidence(record.confidence),
-    probe: record.probe ?? record.question ?? {}
+    probe: record.probe ?? record.question ?? {},
+    sourceAgent: normalizedSourceAgent(record.sourceAgent)
   };
 }, z.object({
   id: z.string().min(1),
@@ -587,14 +610,22 @@ export const DetectedConflictSchema = z.preprocess((input) => {
   explanation: z.string().min(1),
   hiddenPreference: z.string().min(1),
   confidence: z.number().min(0).max(1),
-  probe: ConflictProbeSchema
+  probe: ConflictProbeSchema,
+  sourceAgent: AgentNameSchema.optional()
 }));
 
 export const PreferenceProbeAnswerSchema = z.object({
   conflictId: z.string().min(1),
   optionId: z.string().min(1),
   answer: z.string().min(1),
-  planningImpact: z.string().min(1)
+  planningImpact: z.string().min(1),
+  skipped: z.boolean().default(false),
+  customAnswer: z.string().default("")
+});
+
+export const PreferenceControlSchema = z.object({
+  state: z.enum(["active", "locked", "ignored"]),
+  priority: z.enum(["primary", "normal", "low"])
 });
 
 export const LearnedPreferenceSchema = z.preprocess((input) => {
@@ -613,7 +644,8 @@ export const LearnedPreferenceSchema = z.preprocess((input) => {
       "Use this preference to shape route, pace, comfort, and activity choices."
     ),
     source: normalizedSource(record.source ?? "User"),
-    confidence: normalizedConfidence(record.confidence)
+    confidence: normalizedConfidence(record.confidence),
+    sourceAgent: normalizedSourceAgent(record.sourceAgent)
   };
 }, z.object({
   id: z.string().min(1),
@@ -623,7 +655,8 @@ export const LearnedPreferenceSchema = z.preprocess((input) => {
   value: z.string().min(1),
   planningImpact: z.string().min(1),
   source: PreferenceSourceSchema,
-  confidence: z.number().min(0).max(1)
+  confidence: z.number().min(0).max(1),
+  sourceAgent: AgentNameSchema.optional()
 }));
 
 export const PreferenceInfluenceSchema = z.preprocess((input) => {
@@ -674,18 +707,25 @@ function normalizedCoordinateNumber(input: unknown, min: number, max: number): n
   return value;
 }
 
+function plausibleCoordinatePair(lat: number, lng: number): boolean {
+  // LLMs sometimes emit placeholder coordinates at or near (0, 0) — "Null
+  // Island" in the Gulf of Guinea. No real itinerary stop lives there; treat
+  // near-zero pairs as unknown so geocoding can resolve the place by name.
+  return !(Math.abs(lat) < 0.5 && Math.abs(lng) < 0.5);
+}
+
 function normalizedCoordinates(input: unknown): { lat: number; lng: number } | null {
   if (Array.isArray(input)) {
     const lat = normalizedCoordinateNumber(input[0], -90, 90);
     const lng = normalizedCoordinateNumber(input[1], -180, 180);
-    return lat === null || lng === null ? null : { lat, lng };
+    return lat === null || lng === null || !plausibleCoordinatePair(lat, lng) ? null : { lat, lng };
   }
 
   const record = asRecord(input);
   const lat = normalizedCoordinateNumber(record.lat ?? record.latitude, -90, 90);
   const lng = normalizedCoordinateNumber(record.lng ?? record.lon ?? record.long ?? record.longitude, -180, 180);
 
-  return lat === null || lng === null ? null : { lat, lng };
+  return lat === null || lng === null || !plausibleCoordinatePair(lat, lng) ? null : { lat, lng };
 }
 
 export const CoordinatesSchema = z.object({
@@ -965,7 +1005,11 @@ export const ActivitySchema = z.preprocess((input) => {
     bookingRisk: normalizedImpact(record.bookingRisk),
     openingHoursRisk: normalizedImpact(record.openingHoursRisk),
     preferenceFit: asText(record.preferenceFit ?? record.fit, "Aligned with confirmed preferences."),
-    imageHint: asText(record.imageHint ?? record.image ?? record.thumbnail, title)
+    imageHint: asText(record.imageHint ?? record.image ?? record.thumbnail, title),
+    relatedPreferenceIds: (Array.isArray(record.relatedPreferenceIds ?? record.related_preference_ids)
+      ? ((record.relatedPreferenceIds ?? record.related_preference_ids) as unknown[])
+      : []
+    ).filter((item): item is string => typeof item === "string")
   };
 }, z.object({
   id: z.string().min(1),
@@ -982,7 +1026,8 @@ export const ActivitySchema = z.preprocess((input) => {
   bookingRisk: ImpactSchema,
   openingHoursRisk: ImpactSchema,
   preferenceFit: z.string().min(1),
-  imageHint: z.string().min(1)
+  imageHint: z.string().min(1),
+  relatedPreferenceIds: z.array(z.string()).default([])
 }));
 
 export const AlternativeOptionSchema = z.preprocess((input) => {
@@ -1177,7 +1222,8 @@ export const ConstraintWarningSchema = z.preprocess((input) => {
     message: asText(record.message ?? record.issue ?? record.warning, "Potential feasibility issue."),
     affectedDay,
     recommendation: asText(record.recommendation ?? record.suggestedFix ?? record.fix, "Review this before booking."),
-    status: statusText.includes("resolve") ? "Resolved" : statusText.includes("ack") ? "Acknowledged" : "Open"
+    status: statusText.includes("resolve") ? "Resolved" : statusText.includes("ack") ? "Acknowledged" : "Open",
+    sourceAgent: normalizedSourceAgent(record.sourceAgent)
   };
 }, z.object({
   id: z.string().min(1),
@@ -1186,7 +1232,8 @@ export const ConstraintWarningSchema = z.preprocess((input) => {
   message: z.string().min(1),
   affectedDay: z.number().int().min(1).nullable(),
   recommendation: z.string().min(1),
-  status: z.enum(["Open", "Acknowledged", "Resolved"])
+  status: z.enum(["Open", "Acknowledged", "Resolved"]),
+  sourceAgent: AgentNameSchema.optional()
 }));
 
 export const InputConsistencyIssueSchema = z.preprocess((input) => {
@@ -1241,20 +1288,12 @@ export const InputConsistencyOutputSchema = z.preprocess((input) => {
 }));
 
 export const AgentTraceSchema = z.object({
-  agent: z.enum([
-    "Conflict Detector Agent",
-    "Preference Probe Agent",
-    "Preference Agent",
-    "Assumption Critic Agent",
-    "Input Consistency Agent",
-    "Planner Agent",
-    "Constraint Checker Agent",
-    "Memory Agent"
-  ]),
+  agent: AgentNameSchema,
   summary: z.string().min(1),
   status: z.enum(["Idle", "Running", "Complete", "Error"]),
   count: z.number().int().min(0),
-  timestamp: z.string().min(1)
+  timestamp: z.string().min(1),
+  durationMs: z.number().min(0).optional()
 });
 
 export const MemoryPreferenceSchema = z.object({
@@ -1378,8 +1417,8 @@ export const PreferenceProbeAgentOutputSchema = z.preprocess((input) => {
   };
 }, z.object({
   summary: z.string().min(1),
-  learnedPreferences: z.array(LearnedPreferenceSchema).min(1),
-  assumptions: z.array(AssumptionSchema).min(1),
+  learnedPreferences: z.array(LearnedPreferenceSchema),
+  assumptions: z.array(AssumptionSchema),
   transportAssumptions: z.array(TransportAssumptionSchema),
   accommodationAssumptions: z.array(AccommodationAssumptionSchema),
   costAssumptions: z.array(CostAssumptionSchema),
@@ -1467,9 +1506,39 @@ export const PlanRequestSchema = z.object({
   language: LanguageSchema.default("en")
 });
 
+export const PaceRatingSchema = z.enum(["Relaxed", "Balanced", "Packed"]);
+
+export const DayDigestSchema = z.object({
+  dayNumber: z.number().int().min(1),
+  city: z.string().min(1),
+  stops: z.array(z.object({ time: z.string(), title: z.string() })),
+  walkingKm: z.number().min(0),
+  travelMinutes: z.number().min(0),
+  costEur: z.number().min(0),
+  pace: PaceRatingSchema
+});
+
+// Compact, UI-ready view of one itinerary option, produced deterministically
+// by the Presentation Agent so the overview screen never has to re-derive it.
+export const PlanDigestSchema = z.object({
+  optionId: z.string().min(1),
+  destination: z.string().min(1),
+  durationDays: z.number().int().min(1),
+  style: z.string().min(1),
+  totalCostEur: z.number().min(0),
+  perDayCostEur: z.number().min(0),
+  budgetRisk: ImpactSchema,
+  paceOverall: PaceRatingSchema,
+  totalWalkingKm: z.number().min(0),
+  longestTransferMinutes: z.number().min(0),
+  categories: z.array(z.object({ category: CostCategorySchema, totalEur: z.number().min(0) })),
+  days: z.array(DayDigestSchema)
+});
+
 export const PlanResponseSchema = z.object({
   itinerary: ItinerarySchema,
   warnings: z.array(ConstraintWarningSchema),
   memoryStatus: MemoryStatusSchema,
-  trace: z.array(AgentTraceSchema)
+  trace: z.array(AgentTraceSchema),
+  digests: z.array(PlanDigestSchema).default([])
 });

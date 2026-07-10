@@ -81,7 +81,7 @@ export function PromptComposer({
   }
 
   return (
-    <section className="pointer-events-auto fixed bottom-4 left-1/2 z-[1200] w-[calc(100%-1.5rem)] max-w-5xl -translate-x-1/2 rounded-[22px] border border-slate-200/80 bg-white/92 p-2 shadow-[0_24px_70px_rgba(41,32,92,0.22)] backdrop-blur">
+    <section className="pointer-events-auto fixed bottom-4 left-1/2 z-[1200] w-[calc(100%-1.5rem)] max-w-5xl -translate-x-1/2 rounded-2xl border border-slate-200/80 bg-white/92 p-2 shadow-[0_24px_70px_rgba(41,32,92,0.22)] backdrop-blur">
       <form
         className="flex flex-col gap-2 md:flex-row md:items-center"
         onSubmit={(event) => {
@@ -170,12 +170,12 @@ function StatusChip({ chip }: { chip: PromptStatusChip }) {
       >
         {chip.label}
       </button>
-      <div className="pointer-events-none invisible absolute bottom-full left-1/2 z-[1300] mb-2 w-80 -translate-x-1/2 rounded-[8px] border border-slate-200 bg-white p-3 text-left opacity-0 shadow-[0_18px_52px_rgba(15,23,42,0.22)] transition group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100">
+      <div className="pointer-events-none invisible absolute bottom-full left-1/2 z-[1300] mb-2 w-80 -translate-x-1/2 rounded-xl border border-slate-200 bg-white p-3 text-left opacity-0 shadow-[0_18px_52px_rgba(15,23,42,0.22)] transition group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100">
         <div className="absolute -bottom-2 left-1/2 size-4 -translate-x-1/2 rotate-45 border-b border-r border-slate-200 bg-white" />
         <p className="text-[11px] font-black uppercase text-indigo-600">{chip.title}</p>
         <div className="mt-2 max-h-64 space-y-1.5 overflow-y-auto pr-1 planner-scrollbar">
           {chip.items.length === 0 ? (
-            <p className="rounded-[8px] bg-slate-50 p-2 text-xs font-semibold text-slate-500">{chip.emptyText}</p>
+            <p className="rounded-xl bg-slate-50 p-2 text-xs font-semibold text-slate-500">{chip.emptyText}</p>
           ) : (
             chip.items.map((item) => {
               const content = (
@@ -197,12 +197,12 @@ function StatusChip({ chip }: { chip: PromptStatusChip }) {
                   key={item.id}
                   type="button"
                   onClick={item.onSelect}
-                  className="w-full rounded-[8px] border border-slate-100 bg-white p-2 text-left transition hover:border-indigo-200 hover:bg-indigo-50"
+                  className="w-full rounded-xl border border-slate-100 bg-white p-2 text-left transition hover:border-indigo-200 hover:bg-indigo-50"
                 >
                   {content}
                 </button>
               ) : (
-                <div key={item.id} className="rounded-[8px] border border-slate-100 bg-white p-2">
+                <div key={item.id} className="rounded-xl border border-slate-100 bg-white p-2">
                   {content}
                 </div>
               );

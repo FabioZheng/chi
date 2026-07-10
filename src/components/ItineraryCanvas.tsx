@@ -9,15 +9,20 @@ import {
   ChevronDown,
   Euro,
   Footprints,
+  Gauge,
+  Landmark,
   MapPin,
   Navigation2,
+  Plane,
   Route,
   Sparkles,
   Tickets,
   Timer,
+  Utensils,
   WalletCards
 } from "lucide-react";
 import { EmptyState, ImpactBadge, Panel } from "@/components/Panel";
+import { buildPlanDigests } from "@/agents/presentationAgent";
 import type { UIText } from "@/i18n";
 import type {
   Activity,
@@ -28,6 +33,7 @@ import type {
   ItineraryDay,
   ItineraryOption,
   MapPlace,
+  PlanDigest,
   RouteSegment
 } from "@/types/travel";
 
@@ -41,6 +47,8 @@ type ItineraryCanvasProps = {
   labels: UIText;
   mode?: "map" | "review";
   onOpenReview?: (dayNumber?: number | null) => void;
+  digests?: PlanDigest[];
+  onQuickAdjust?: (instruction: string) => void;
 };
 
 type MapView = "all" | number;
@@ -75,11 +83,6 @@ type MapAdjustment = {
   offsetX: number;
   offsetY: number;
 };
-
-type LeafletModule = typeof import("leaflet");
-type LeafletMapInstance = import("leaflet").Map;
-type LeafletLayerGroup = import("leaflet").LayerGroup;
-type LeafletImport = LeafletModule & { default?: LeafletModule };
 
 const MAP_WIDTH = 1000;
 const MAP_HEIGHT = 600;
@@ -225,21 +228,46 @@ function activityLookup(option: ItineraryOption) {
   return lookup;
 }
 
-function averageCoordinates(places: Array<Pick<MapPlace, "coordinates">>) {
+// Display-level guard against hallucinated coordinates (near-(0,0) placeholders
+// or points wildly outside the trip area) that survived in older saved plans:
+// implausible points are shown as "location unavailable" instead of dragging
+// the whole map to the Gulf of Guinea.
+function sanitizeDisplayCoordinates(places: MapPlace[], labels: UIText): MapPlace[] {
   const located = places.filter((place) => place.coordinates);
+  const nearNullIsland = (coordinates: { lat: number; lng: number }) =>
+    Math.abs(coordinates.lat) < 0.5 && Math.abs(coordinates.lng) < 0.5;
 
-  if (located.length === 0) {
-    return null;
+  let isOutlier = (_coordinates: { lat: number; lng: number }) => false;
+
+  if (located.length >= 3) {
+    const sortedLats = located.map((place) => place.coordinates!.lat).sort((a, b) => a - b);
+    const sortedLngs = located.map((place) => place.coordinates!.lng).sort((a, b) => a - b);
+    const center = {
+      lat: sortedLats[Math.floor(sortedLats.length / 2)],
+      lng: sortedLngs[Math.floor(sortedLngs.length / 2)]
+    };
+    const distances = located.map((place) => haversineDistanceKm(place.coordinates, center)).sort((a, b) => a - b);
+    const spreadKm = distances[Math.floor(distances.length / 2)];
+    const thresholdKm = Math.max(800, spreadKm * 4);
+    isOutlier = (coordinates) => haversineDistanceKm(coordinates, center) > thresholdKm;
   }
 
-  return {
-    lat: located.reduce((sum, place) => sum + (place.coordinates?.lat ?? 0), 0) / located.length,
-    lng: located.reduce((sum, place) => sum + (place.coordinates?.lng ?? 0), 0) / located.length
-  };
+  return places.map((place) => {
+    if (!place.coordinates || (!nearNullIsland(place.coordinates) && !isOutlier(place.coordinates))) {
+      return place;
+    }
+
+    return {
+      ...place,
+      coordinates: null,
+      locationStatus: "Unavailable" as const,
+      unavailableReason: labels.locationUnavailable
+    };
+  });
 }
 
 function buildDisplayPlaces(option: ItineraryOption, labels: UIText): DisplayPlace[] {
-  const rawPlaces = derivePlaces(option);
+  const rawPlaces = sanitizeDisplayCoordinates(derivePlaces(option), labels);
   const activities = activityLookup(option);
   const consumedOrder = new Map<number, number>();
 
@@ -293,33 +321,9 @@ function buildDisplayPlaces(option: ItineraryOption, labels: UIText): DisplayPla
     };
   });
 
-  const basePlaces = option.days.map((day, index) => {
-    const dayPlaces = displayPlaces.filter((place) => place.dayNumber === day.dayNumber && place.coordinates);
-    const coordinates = averageCoordinates(dayPlaces);
-    const area = day.accommodation?.area || primaryDayLocation(day, displayPlaces);
-    const baseTitle = day.accommodation ? labels.hotelBase : labels.assumedBaseArea;
-    const isAssumedBase = !day.accommodation || day.accommodation.status !== "Accepted";
-
-    return {
-      id: `base-day-${day.dayNumber}`,
-      dayNumber: day.dayNumber,
-      title: baseTitle,
-      location: area,
-      coordinates,
-      locationStatus: coordinates ? "Approximate" as const : "Unavailable" as const,
-      sourceActivityId: null,
-      unavailableReason: coordinates ? null : labels.routeMissingReason,
-      sequence: displayPlaces.length + index,
-      orderInDay: 0,
-      markerLabel: "B",
-      kind: "base" as const,
-      activity: null,
-      isAssumedBase,
-      dayTitle: day.title
-    };
-  });
-
-  return [...displayPlaces, ...basePlaces];
+  // Hotel/base markers were removed: the map now shows only real points of
+  // interest so it reads like a natural map rather than a hub-and-spoke diagram.
+  return displayPlaces;
 }
 
 function labelsUnavailableReason(place: MapPlace | undefined) {
@@ -498,6 +502,46 @@ function decodeGooglePolyline(encoded: string): [number, number][] {
   return coordinates;
 }
 
+// Estimated legs have no road geometry, so instead of a harsh straight line we
+// draw a gently bowed arc (quadratic bezier) that reads like a hand-drawn travel
+// route. The control point is offset perpendicular to the leg; longer legs bow a
+// little more, and the bow is clamped so it never balloons on cross-country hops.
+function buildArcPath(
+  from: { lat: number; lng: number },
+  to: { lat: number; lng: number }
+): { lat: number; lng: number }[] {
+  const steps = 36;
+  const midLat = (from.lat + to.lat) / 2;
+  const lngScale = Math.max(0.2, Math.cos((midLat * Math.PI) / 180));
+
+  const dLat = to.lat - from.lat;
+  const dLng = (to.lng - from.lng) * lngScale;
+  const length = Math.hypot(dLat, dLng);
+
+  if (length < 1e-6) {
+    return [from, to];
+  }
+
+  const bow = Math.min(length * 0.16, 0.9);
+  const perpLat = -dLng / length;
+  const perpLng = dLat / length / lngScale;
+  const controlLat = midLat + perpLat * bow;
+  const controlLng = (from.lng + to.lng) / 2 + perpLng * bow;
+
+  const path: { lat: number; lng: number }[] = [];
+
+  for (let i = 0; i <= steps; i += 1) {
+    const t = i / steps;
+    const inverse = 1 - t;
+    path.push({
+      lat: inverse * inverse * from.lat + 2 * inverse * t * controlLat + t * t * to.lat,
+      lng: inverse * inverse * from.lng + 2 * inverse * t * controlLng + t * t * to.lng
+    });
+  }
+
+  return path;
+}
+
 type TripTimelineItem = {
   id: string;
   startDay: number;
@@ -576,42 +620,57 @@ function selectedPlaceHighlights(selectedOption: ItineraryOption, selectedPlace:
   return (related.length > 0 ? related : day.activities).slice(0, 3);
 }
 
+function transportCategory(mode: string, labels: UIText): { key: string; label: string; color: string } | null {
+  const value = mode.toLowerCase();
+
+  if (value.includes("walk") || value.includes("foot")) {
+    return { key: "walk", label: labels.walk, color: "#2563eb" };
+  }
+
+  if (value.includes("train") || value.includes("rail")) {
+    return { key: "train", label: labels.train, color: "#dc2626" };
+  }
+
+  if (value.includes("taxi") || value.includes("car") || value.includes("drive") || value.includes("private")) {
+    return { key: "taxi", label: labels.taxiCar, color: "#334155" };
+  }
+
+  if (value.includes("flight") || value.includes("plane") || value.includes("air")) {
+    return { key: "flight", label: labels.flight, color: "#7c3aed" };
+  }
+
+  if (value.includes("ferry") || value.includes("boat")) {
+    return { key: "ferry", label: mode, color: "#0284c7" };
+  }
+
+  if (
+    value.includes("bus") ||
+    value.includes("metro") ||
+    value.includes("subway") ||
+    value.includes("tram") ||
+    value.includes("public") ||
+    value.includes("transit")
+  ) {
+    return { key: "transit", label: labels.publicTransport, color: "#f97316" };
+  }
+
+  return null;
+}
+
+// The legend lists only the transport categories actually used on the current
+// view, grouped so "Metro"/"Subway"/"Bus" collapse into one readable row.
 function routeTransportModes(routeSegments: DisplayRouteSegment[], labels: UIText) {
-  const modes = new Map<string, { label: string; color: string; dashArray?: string }>();
-  const seedModes = [
-    labels.walk,
-    labels.taxiCar,
-    labels.publicTransport,
-    labels.train,
-    labels.flight,
-    labels.routeEstimated
-  ];
-
-  seedModes.forEach((label) => {
-    const key = label.trim().toLowerCase();
-    if (!key || modes.has(key)) {
-      return;
-    }
-
-    modes.set(key, {
-      label,
-      ...routeVisualStyle(label, "#64748b", label === labels.routeEstimated ? "Estimated" : "Real")
-    });
-  });
+  const categories = new Map<string, { label: string; color: string }>();
 
   routeSegments.forEach((segment) => {
-    const key = segment.transportMode.trim().toLowerCase();
-    if (!key || modes.has(key)) {
-      return;
-    }
+    const category = transportCategory(segment.transportMode, labels);
 
-    modes.set(key, {
-      label: segment.transportMode,
-      ...routeVisualStyle(segment.transportMode, dayColor(segment.dayNumber), routeGeometryStatus(segment))
-    });
+    if (category && !categories.has(category.key)) {
+      categories.set(category.key, { label: category.label, color: category.color });
+    }
   });
 
-  return Array.from(modes.values()).slice(0, 7);
+  return Array.from(categories.values()).slice(0, 6);
 }
 
 function dedupeRouteSegments(segments: RouteSegment[]) {
@@ -826,24 +885,12 @@ function buildContinuousRouteSegments(
   const expectedSegments: DisplayRouteSegment[] = [];
   const activeDays = option.days.filter((day) => view === "all" || day.dayNumber === view);
 
+  // Connect only the real stops of each day in visiting order. Base/hotel
+  // anchor legs were removed so the route follows the actual points of interest.
   activeDays.forEach((day) => {
     const dayPlaces = places
       .filter((place) => place.dayNumber === day.dayNumber && place.kind === "poi")
       .sort((a, b) => a.orderInDay - b.orderInDay || a.sequence - b.sequence);
-    const base = places.find((place) => place.id === `base-day-${day.dayNumber}`);
-
-    if (base && dayPlaces[0] && !routeLegExists(existingKeys, lookup, base, dayPlaces[0], day.dayNumber)) {
-      expectedSegments.push(
-        syntheticRouteSegment({
-          from: base,
-          to: dayPlaces[0],
-          dayNumber: day.dayNumber,
-          purpose: `${labels.hotelBase} - ${formatDay(labels, day.dayNumber)} ${labels.stopOrder} 1`,
-          assumptions,
-          labels
-        })
-      );
-    }
 
     dayPlaces.slice(1).forEach((place, index) => {
       const from = dayPlaces[index];
@@ -860,47 +907,7 @@ function buildContinuousRouteSegments(
         );
       }
     });
-
-    const last = dayPlaces[dayPlaces.length - 1];
-    if (base && last && !routeLegExists(existingKeys, lookup, last, base, day.dayNumber)) {
-      expectedSegments.push(
-        syntheticRouteSegment({
-          from: last,
-          to: base,
-          dayNumber: day.dayNumber,
-          purpose: `${formatDay(labels, day.dayNumber)} ${labels.stopOrder} ${dayPlaces.length} - ${labels.hotelBase}`,
-          assumptions,
-          labels
-        })
-      );
-    }
   });
-
-  if (view === "all") {
-    option.days.slice(1).forEach((day, index) => {
-      const previousDay = option.days[index];
-      const previousBase = places.find((place) => place.id === `base-day-${previousDay.dayNumber}`);
-      const nextBase = places.find((place) => place.id === `base-day-${day.dayNumber}`);
-
-      if (
-        previousBase &&
-        nextBase &&
-        normalizedPlaceText(previousBase.location) !== normalizedPlaceText(nextBase.location) &&
-        !routeLegExists(existingKeys, lookup, previousBase, nextBase, day.dayNumber)
-      ) {
-        expectedSegments.push(
-          syntheticRouteSegment({
-            from: previousBase,
-            to: nextBase,
-            dayNumber: day.dayNumber,
-            purpose: `${formatDay(labels, previousDay.dayNumber)} - ${formatDay(labels, day.dayNumber)} ${labels.baseChanges}`,
-            assumptions,
-            labels
-          })
-        );
-      }
-    });
-  }
 
   return dedupeRouteSegments([...structuredSegments, ...expectedSegments]).map((segment) => ({
     ...segment,
@@ -947,13 +954,6 @@ function routeVisualStyle(transportMode: string, fallbackColor: string, routeSta
   return { color: fallbackColor, dashArray: estimatedDash };
 }
 
-function routeBearingDegrees(
-  from: { lat: number; lng: number },
-  to: { lat: number; lng: number }
-) {
-  return (Math.atan2(to.lat - from.lat, to.lng - from.lng) * 180) / Math.PI;
-}
-
 function routePopupHtml(segment: DisplayRouteSegment, from: DisplayPlace, to: DisplayPlace, labels: UIText) {
   const status = routeGeometryStatus(segment);
   const statusClass = status.toLowerCase();
@@ -990,9 +990,7 @@ function placePopupHtml(place: DisplayPlace, labels: UIText) {
   const dayLabel = place.dayNumber ? `${formatDay(labels, place.dayNumber)} - ${labels.stopOrder} ${place.markerLabel}` : labels.fullTrip;
   const riskLine = place.activity
     ? `${labels.warningTypeLabels.bookingRisk}: ${labels.impactLabels[place.activity.bookingRisk]} · ${labels.warningTypeLabels.openingHoursRisk}: ${labels.impactLabels[place.activity.openingHoursRisk]}`
-    : place.isAssumedBase
-      ? labels.assumedBaseArea
-      : labels.hotelBase;
+    : place.location;
 
   return `
     <div class="itinerary-popup">
@@ -1157,11 +1155,63 @@ function escapeHtml(value: string) {
     .replace(/'/g, "&#039;");
 }
 
-function normalizeLeafletModule(module: LeafletImport): LeafletModule {
-  return module.default ?? module;
+/* eslint-disable @typescript-eslint/no-explicit-any */
+type GoogleMapsNamespace = any;
+
+declare global {
+  interface Window {
+    google?: { maps?: GoogleMapsNamespace };
+  }
 }
 
-function LeafletRouteMap({
+let googleMapsLoader: Promise<GoogleMapsNamespace> | null = null;
+
+function loadGoogleMaps(apiKey: string): Promise<GoogleMapsNamespace> {
+  if (typeof window === "undefined") {
+    return Promise.reject(new Error("Google Maps can only load in the browser."));
+  }
+
+  const existing = window.google?.maps;
+
+  if (existing?.importLibrary) {
+    return Promise.resolve(existing);
+  }
+
+  if (!googleMapsLoader) {
+    googleMapsLoader = new Promise((resolve, reject) => {
+      const callbackName = "__plannerGoogleMapsReady";
+      (window as unknown as Record<string, unknown>)[callbackName] = () => {
+        resolve((window as unknown as { google: { maps: GoogleMapsNamespace } }).google.maps);
+      };
+
+      const script = document.createElement("script");
+      script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async&callback=${callbackName}`;
+      script.async = true;
+      script.onerror = () => {
+        googleMapsLoader = null;
+        reject(new Error("Failed to load the Google Maps JavaScript API."));
+      };
+      document.head.appendChild(script);
+    });
+  }
+
+  return googleMapsLoader;
+}
+
+function buildMarkerContent(place: DisplayPlace, selected: boolean) {
+  const color = dayColor(place.dayNumber);
+  const root = document.createElement("div");
+  root.className = "itinerary-map-marker-shell";
+  root.innerHTML = `<div class="itinerary-map-marker ${place.kind === "base" ? "is-base" : ""} ${
+    place.isAssumedBase ? "is-assumed" : ""
+  } ${selected ? "is-selected" : ""}" style="--marker-color:${color}"><span class="itinerary-marker-number">${escapeHtml(
+    place.markerLabel
+  )}</span></div><div class="itinerary-map-marker-label">${escapeHtml(place.title)}</div>`;
+
+  return root;
+}
+
+function GoogleRouteMap({
   labels,
   places,
   routeSegments,
@@ -1189,12 +1239,19 @@ function LeafletRouteMap({
   onOpenReview?: (dayNumber?: number | null) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<LeafletMapInstance | null>(null);
-  const leafletRef = useRef<LeafletModule | null>(null);
-  const markerLayerRef = useRef<LeafletLayerGroup | null>(null);
-  const routeLayerRef = useRef<LeafletLayerGroup | null>(null);
+  const mapRef = useRef<any>(null);
+  const mapsRef = useRef<GoogleMapsNamespace | null>(null);
+  const markerLibRef = useRef<any>(null);
+  const infoWindowRef = useRef<any>(null);
+  const overlaysRef = useRef<any[]>([]);
+  const onSelectPlaceRef = useRef(onSelectPlace);
+  const onOpenReviewRef = useRef(onOpenReview);
   const [mapReady, setMapReady] = useState(0);
+  const [mapError, setMapError] = useState<string | null>(null);
   const availablePlaces = useMemo(() => places.filter((place) => place.coordinates), [places]);
+
+  onSelectPlaceRef.current = onSelectPlace;
+  onOpenReviewRef.current = onOpenReview;
   const placesKey = places
     .map((place) => `${place.id}:${place.coordinates?.lat ?? "x"}:${place.coordinates?.lng ?? "x"}:${place.dayNumber ?? "all"}`)
     .join("|");
@@ -1207,95 +1264,95 @@ function LeafletRouteMap({
 
   useEffect(() => {
     let cancelled = false;
+    const apiKey = (process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "").trim();
+
+    if (!apiKey) {
+      setMapError("Missing NEXT_PUBLIC_GOOGLE_MAPS_API_KEY. Add it to .env and restart the dev server.");
+      return;
+    }
 
     async function createMap() {
-      const leaflet = normalizeLeafletModule(await import("leaflet"));
+      try {
+        const maps = await loadGoogleMaps(apiKey);
 
-      if (cancelled || !containerRef.current || mapRef.current) {
-        return;
+        if (cancelled || !containerRef.current || mapRef.current) {
+          return;
+        }
+
+        const markerLib = await maps.importLibrary("marker");
+
+        if (cancelled || !containerRef.current || mapRef.current) {
+          return;
+        }
+
+        mapsRef.current = maps;
+        markerLibRef.current = markerLib;
+
+        const map = new maps.Map(containerRef.current, {
+          center: { lat: 20, lng: 0 },
+          zoom: 2,
+          mapId: "DEMO_MAP_ID",
+          clickableIcons: false,
+          disableDefaultUI: true,
+          zoomControl: true,
+          fullscreenControl: true,
+          gestureHandling: "greedy",
+          backgroundColor: "#e6edf6"
+        });
+
+        const infoWindow = new maps.InfoWindow({ maxWidth: 330 });
+
+        infoWindow.addListener("domready", () => {
+          const trigger = document.querySelector<HTMLElement>(".gm-style [data-open-review-day]");
+
+          if (!trigger) {
+            return;
+          }
+
+          trigger.onclick = () => {
+            const rawDay = trigger.dataset.openReviewDay;
+            const dayNumber = rawDay ? Number(rawDay) : null;
+            infoWindow.close();
+            onOpenReviewRef.current?.(Number.isFinite(dayNumber) && dayNumber ? dayNumber : null);
+          };
+        });
+
+        mapRef.current = map;
+        infoWindowRef.current = infoWindow;
+        setMapReady((current) => current + 1);
+      } catch (caught) {
+        if (!cancelled) {
+          setMapError(caught instanceof Error ? caught.message : "Google Maps failed to load.");
+        }
       }
-
-      leafletRef.current = leaflet;
-      const map = leaflet.map(containerRef.current, {
-        attributionControl: false,
-        preferCanvas: true,
-        scrollWheelZoom: true,
-        zoomControl: false
-      });
-
-      leaflet
-        .tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png", {
-          attribution: labels.mapDataAttribution,
-          maxZoom: 19,
-          subdomains: "abcd"
-        })
-        .addTo(map);
-      leaflet.control.zoom({ position: "topright" }).addTo(map);
-      leaflet.control.attribution({ position: "bottomright", prefix: false }).addTo(map);
-
-      routeLayerRef.current = leaflet.layerGroup().addTo(map);
-      markerLayerRef.current = leaflet.layerGroup().addTo(map);
-      mapRef.current = map;
-      map.setView([20, 0], 2);
-      setMapReady((current) => current + 1);
-
-      window.setTimeout(() => map.invalidateSize(), 80);
     }
 
     void createMap();
 
     return () => {
       cancelled = true;
-
-      if (mapRef.current) {
-        mapRef.current.remove();
-        mapRef.current = null;
-        markerLayerRef.current = null;
-        routeLayerRef.current = null;
-      }
     };
-  }, [labels.mapDataAttribution]);
+  }, []);
 
   useEffect(() => {
+    const maps = mapsRef.current;
     const map = mapRef.current;
+    const markerLib = markerLibRef.current;
+    const infoWindow = infoWindowRef.current;
 
-    if (!map || !onOpenReview) {
+    if (!maps || !map || !markerLib || mapReady === 0) {
       return;
     }
 
-    const handlePopupOpen = (event: { popup: { getElement: () => HTMLElement | undefined } }) => {
-      const element = event.popup.getElement()?.querySelector<HTMLElement>("[data-open-review-day]");
-
-      if (!element) {
-        return;
+    overlaysRef.current.forEach((overlay) => {
+      if (typeof overlay.setMap === "function") {
+        overlay.setMap(null);
+      } else {
+        overlay.map = null;
       }
-
-      element.onclick = () => {
-        const rawDay = element.dataset.openReviewDay;
-        const dayNumber = rawDay ? Number(rawDay) : null;
-        onOpenReview(Number.isFinite(dayNumber) && dayNumber ? dayNumber : null);
-      };
-    };
-
-    map.on("popupopen", handlePopupOpen);
-
-    return () => {
-      map.off("popupopen", handlePopupOpen);
-    };
-  }, [mapReady, onOpenReview]);
-
-  useEffect(() => {
-    const leaflet = leafletRef.current;
-    const map = mapRef.current;
-    const markerLayer = markerLayerRef.current;
-    const routeLayer = routeLayerRef.current;
-
-    if (!leaflet || !map || !markerLayer || !routeLayer || mapReady === 0) {
-      return;
-    }
-
-    markerLayer.clearLayers();
-    routeLayer.clearLayers();
+    });
+    overlaysRef.current = [];
+    infoWindow?.close();
 
     const placeLookup = new Map<string, DisplayPlace>();
 
@@ -1306,7 +1363,7 @@ function LeafletRouteMap({
       }
     });
 
-    routeSegments.forEach((segment, index) => {
+    routeSegments.forEach((segment) => {
       const from = placeLookup.get(segment.fromPlaceId);
       const to = placeLookup.get(segment.toPlaceId);
 
@@ -1316,66 +1373,83 @@ function LeafletRouteMap({
 
       const status = routeGeometryStatus(segment);
       const decodedCoordinates = isVerifiedRouteGeometry(segment) && segment.encodedPolyline ? decodeGooglePolyline(segment.encodedPolyline) : [];
-      const coordinates = decodedCoordinates.length >= 2 ? decodedCoordinates : [[from.coordinates.lat, from.coordinates.lng], [to.coordinates.lat, to.coordinates.lng]] as [number, number][];
+      // Verified routes use the real road polyline; everything else gets a smooth
+      // bowed arc instead of a straight line between the two coordinates.
+      const path =
+        decodedCoordinates.length >= 2
+          ? decodedCoordinates.map(([lat, lng]) => ({ lat, lng }))
+          : buildArcPath(
+              { lat: from.coordinates.lat, lng: from.coordinates.lng },
+              { lat: to.coordinates.lat, lng: to.coordinates.lng }
+            );
       const visualStyle = routeVisualStyle(segment.transportMode, dayColor(segment.dayNumber ?? from.dayNumber), status);
-      const midpoint: [number, number] = [
-        coordinates[Math.floor(coordinates.length / 2)]?.[0] ?? (from.coordinates.lat + to.coordinates.lat) / 2,
-        coordinates[Math.floor(coordinates.length / 2)]?.[1] ?? (from.coordinates.lng + to.coordinates.lng) / 2
-      ];
-      const arrowFrom = coordinates[Math.max(0, Math.floor(coordinates.length / 2) - 1)] || [from.coordinates.lat, from.coordinates.lng];
-      const arrowTo = coordinates[Math.min(coordinates.length - 1, Math.floor(coordinates.length / 2) + 1)] || [to.coordinates.lat, to.coordinates.lng];
-      const routeAngle = routeBearingDegrees({ lat: arrowFrom[0], lng: arrowFrom[1] }, { lat: arrowTo[0], lng: arrowTo[1] });
+      const dashed = status !== "Real" || segment.distanceKm === 0 || Boolean(visualStyle.dashArray);
+      const midpoint = path[Math.floor(path.length / 2)] || {
+        lat: (from.coordinates.lat + to.coordinates.lat) / 2,
+        lng: (from.coordinates.lng + to.coordinates.lng) / 2
+      };
 
-      leaflet
-        .polyline(coordinates, {
-          color: "#ffffff",
-          opacity: 0.78,
-          weight: 12,
-          lineCap: "round",
-          lineJoin: "round"
-        })
-        .addTo(routeLayer);
-
-      const routeLine = leaflet
-        .polyline(coordinates, {
-          color: visualStyle.color,
-          dashArray: status !== "Real" || segment.distanceKm === 0 ? "7 7" : visualStyle.dashArray,
-          opacity: 0.92,
-          weight: status === "Missing" ? 4 : 6,
-          lineCap: "round",
-          lineJoin: "round"
-        });
-
-      routeLine.bindPopup(routePopupHtml(segment, from, to, labels), {
-        className: "itinerary-leaflet-popup",
-        maxWidth: 300
+      const casing = new maps.Polyline({
+        map,
+        path,
+        clickable: false,
+        strokeColor: "#ffffff",
+        strokeOpacity: 0.85,
+        strokeWeight: 9,
+        zIndex: 10
       });
-      routeLine.addTo(routeLayer);
 
-      leaflet
-        .marker(midpoint, {
-          interactive: false,
-          icon: leaflet.divIcon({
-            className: "itinerary-route-arrow-shell",
-            html: `<div class="itinerary-route-arrow" style="--route-color:${visualStyle.color}; --route-angle:${routeAngle}deg"></div>`,
-            iconAnchor: [8, 8],
-            iconSize: [16, 16]
-          })
-        })
-        .addTo(routeLayer);
+      const icons: any[] = [];
+
+      if (dashed) {
+        icons.push({
+          icon: { path: "M 0,-1 0,1", strokeOpacity: 1, strokeWeight: 3, scale: 2.2, strokeColor: visualStyle.color },
+          offset: "0",
+          repeat: "14px"
+        });
+      }
+
+      icons.push({
+        icon: {
+          path: maps.SymbolPath.FORWARD_CLOSED_ARROW,
+          scale: 2.6,
+          strokeColor: "#ffffff",
+          strokeWeight: 1,
+          fillColor: visualStyle.color,
+          fillOpacity: 1
+        },
+        offset: "52%"
+      });
+
+      const routeLine = new maps.Polyline({
+        map,
+        path,
+        strokeColor: visualStyle.color,
+        strokeOpacity: dashed ? 0 : 0.92,
+        strokeWeight: status === "Missing" ? 4 : 5,
+        icons,
+        zIndex: 20
+      });
+
+      routeLine.addListener("click", (event: { latLng?: unknown }) => {
+        infoWindow.setContent(routePopupHtml(segment, from, to, labels));
+        infoWindow.setPosition(event.latLng ?? midpoint);
+        infoWindow.open({ map });
+      });
+
+      overlaysRef.current.push(casing, routeLine);
 
       if (status !== "Real") {
-        leaflet
-          .marker(midpoint, {
-            interactive: false,
-            icon: leaflet.divIcon({
-              className: "itinerary-route-warning-shell",
-              html: `<div class="itinerary-route-warning">!</div>`,
-              iconAnchor: [10, 10],
-              iconSize: [20, 20]
-            })
-          })
-          .addTo(routeLayer);
+        const warningContent = document.createElement("div");
+        warningContent.className = "itinerary-route-warning";
+        warningContent.textContent = "!";
+        const warningMarker = new markerLib.AdvancedMarkerElement({
+          map,
+          position: midpoint,
+          content: warningContent,
+          zIndex: 30
+        });
+        overlaysRef.current.push(warningMarker);
       }
     });
 
@@ -1385,55 +1459,58 @@ function LeafletRouteMap({
       }
 
       const selected = selectedPlaceId === place.id;
-      const color = dayColor(place.dayNumber);
-      const icon = leaflet.divIcon({
-        className: "itinerary-leaflet-marker-shell",
-        html: `<div class="itinerary-leaflet-marker ${place.kind === "base" ? "is-base" : ""} ${place.isAssumedBase ? "is-assumed" : ""} ${
-          selected ? "is-selected" : ""
-        }" style="--marker-color:${color}" title="${escapeHtml(
-          place.title
-        )}"><span class="itinerary-marker-number">${escapeHtml(place.markerLabel)}</span></div><div class="itinerary-leaflet-marker-label">${escapeHtml(
-          place.title
-        )}</div>`,
-        iconAnchor: [22, 22],
-        iconSize: [44, 58]
+      const marker = new markerLib.AdvancedMarkerElement({
+        map,
+        position: { lat: place.coordinates.lat, lng: place.coordinates.lng },
+        content: buildMarkerContent(place, selected),
+        title: `${place.title} - ${place.location}`,
+        zIndex: selected ? 60 : place.kind === "base" ? 40 : 50
       });
 
-      const marker = leaflet
-        .marker([place.coordinates.lat, place.coordinates.lng], {
-          icon,
-          title: `${place.title} - ${place.location}`
-        })
-        .on("click", () => onSelectPlace?.(place.id));
-
-      marker.bindPopup(placePopupHtml(place, labels), {
-        className: "itinerary-leaflet-popup",
-        maxWidth: 300
+      marker.addListener("click", () => {
+        onSelectPlaceRef.current?.(place.id);
+        infoWindow.setContent(placePopupHtml(place, labels));
+        infoWindow.open({ map, anchor: marker });
       });
-      marker.addTo(markerLayer);
+
+      overlaysRef.current.push(marker);
     });
 
     if (availablePlaces.length === 0) {
-      map.setView([20, 0], 2);
+      map.setCenter({ lat: 20, lng: 0 });
+      map.setZoom(2);
     } else if (availablePlaces.length === 1) {
       const coordinates = availablePlaces[0].coordinates!;
-      map.flyTo([coordinates.lat, coordinates.lng], 13, { duration: 0.55 });
+      map.panTo({ lat: coordinates.lat, lng: coordinates.lng });
+      map.setZoom(14);
     } else {
-      const bounds = leaflet.latLngBounds(
-        availablePlaces.map((place) => [place.coordinates!.lat, place.coordinates!.lng] as [number, number])
-      );
-      map.flyToBounds(bounds, { maxZoom: 13, padding: [72, 72], duration: 0.65 });
+      const bounds = new maps.LatLngBounds();
+      availablePlaces.forEach((place) => bounds.extend({ lat: place.coordinates!.lat, lng: place.coordinates!.lng }));
+      map.fitBounds(bounds, 80);
+      maps.event.addListenerOnce(map, "idle", () => {
+        if ((map.getZoom() ?? 0) > 15) {
+          map.setZoom(15);
+        }
+      });
     }
-
-    window.setTimeout(() => map.invalidateSize(), 40);
-  }, [availablePlaces, mapReady, onSelectPlace, placesKey, routeKey, routeSegments, selectedPlaceId]);
+  }, [availablePlaces, labels, mapReady, placesKey, routeKey, routeSegments, selectedPlaceId]);
 
   return (
-    <div className={`relative h-[520px] min-h-[420px] overflow-hidden bg-[#d9ecf2] lg:h-[620px] ${className}`}>
-      <div ref={containerRef} className="leaflet-itinerary-map absolute inset-0" aria-label={labels.mapTitle} />
+    <div className={`relative h-[520px] min-h-[420px] overflow-hidden bg-[#e6edf6] lg:h-[620px] ${className}`}>
+      <div ref={containerRef} className="google-itinerary-map absolute inset-0" aria-label={labels.mapTitle} />
+
+      {mapError ? (
+        <div className="pointer-events-none absolute left-1/2 top-1/2 z-[460] w-[min(420px,calc(100%-48px))] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-amber-200 bg-amber-50/95 p-5 text-center shadow-xl backdrop-blur">
+          <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-amber-100 text-amber-600">
+            <AlertTriangle className="size-6" />
+          </div>
+          <h3 className="mt-3 text-base font-black text-amber-950">Google Maps unavailable</h3>
+          <p className="mx-auto mt-2 max-w-sm text-xs font-semibold leading-5 text-amber-800">{mapError}</p>
+        </div>
+      ) : null}
 
       {overlayTitle ? (
-        <div className="pointer-events-none absolute left-1/2 top-1/2 z-[450] w-[min(420px,calc(100%-48px))] -translate-x-1/2 -translate-y-1/2 rounded-[8px] border border-slate-200 bg-white/94 p-5 text-center shadow-[0_22px_70px_rgba(26,35,67,0.18)] backdrop-blur">
+        <div className="pointer-events-none absolute left-1/2 top-1/2 z-[450] w-[min(420px,calc(100%-48px))] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-slate-200 bg-white/94 p-5 text-center shadow-[0_22px_70px_rgba(26,35,67,0.18)] backdrop-blur">
           <div className="mx-auto flex size-14 items-center justify-center rounded-full bg-gradient-to-br from-indigo-100 to-violet-100 text-indigo-600">
             {planning ? <Timer className="size-7" /> : <Sparkles className="size-7" />}
           </div>
@@ -1443,7 +1520,7 @@ function LeafletRouteMap({
       ) : null}
 
       {showChrome ? (
-        <div className="absolute left-4 top-4 z-[450] rounded-[8px] border border-slate-200 bg-white/94 px-3 py-2 text-xs font-black text-slate-700 shadow-sm backdrop-blur">
+        <div className="absolute left-4 top-4 z-[450] rounded-xl border border-slate-200 bg-white/94 px-3 py-2 text-xs font-black text-slate-700 shadow-sm backdrop-blur">
           <span className="inline-flex items-center gap-2">
             <Navigation2 className="size-4 text-indigo-600" />
             {viewLabel}
@@ -1452,7 +1529,7 @@ function LeafletRouteMap({
       ) : null}
 
       {showChrome ? (
-        <div className="absolute bottom-4 left-4 z-[450] rounded-[8px] border border-slate-200 bg-white/92 px-3 py-2 text-[11px] font-bold text-slate-500 shadow-sm backdrop-blur">
+        <div className="absolute bottom-4 left-4 z-[450] rounded-xl border border-slate-200 bg-white/92 px-3 py-2 text-[11px] font-bold text-slate-500 shadow-sm backdrop-blur">
           {labels.dragToPan} - {labels.wheelToZoom}
         </div>
       ) : null}
@@ -1472,7 +1549,7 @@ function LiveBaseMap({
   overlayBody?: string;
 }) {
   return (
-    <LeafletRouteMap
+    <GoogleRouteMap
       labels={labels}
       places={[]}
       routeSegments={[]}
@@ -1487,7 +1564,7 @@ function LiveBaseMap({
 
 function EmptyCanvas({ planning, labels }: { planning: boolean; labels: UIText }) {
   return (
-    <section className="overflow-hidden rounded-[8px] border border-slate-200 bg-white shadow-[0_22px_70px_rgba(26,35,67,0.1)]">
+    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_14px_40px_rgba(26,35,67,0.08)]">
       <div className="relative">
         <LiveBaseMap
           labels={labels}
@@ -1495,7 +1572,7 @@ function EmptyCanvas({ planning, labels }: { planning: boolean; labels: UIText }
           overlayTitle={planning ? labels.emptyCanvasPlanningTitle : labels.emptyCanvasReadyTitle}
           overlayBody={labels.emptyCanvasBody}
         />
-        <div className="absolute left-4 top-4 z-[900] rounded-[8px] border border-slate-200 bg-white/94 p-4 shadow-[0_18px_48px_rgba(15,23,42,0.14)] backdrop-blur">
+        <div className="absolute left-4 top-4 z-[900] rounded-xl border border-slate-200 bg-white/94 p-4 shadow-[0_18px_48px_rgba(15,23,42,0.14)] backdrop-blur">
           <p className="flex items-center gap-2 text-xs font-black uppercase text-indigo-600">
             <MapPin className="size-3.5" />
             {labels.mapEyebrow}
@@ -1503,7 +1580,7 @@ function EmptyCanvas({ planning, labels }: { planning: boolean; labels: UIText }
           <h2 className="mt-1 text-xl font-black text-slate-950">{labels.mapTitle}</h2>
           <p className="mt-1 max-w-sm text-sm font-semibold leading-6 text-slate-500">{labels.emptyCanvasBody}</p>
         </div>
-        <div className="absolute bottom-4 left-4 z-[900] rounded-[8px] border border-slate-200 bg-white/92 px-3 py-2 text-[11px] font-bold text-slate-500 shadow-sm backdrop-blur">
+        <div className="absolute bottom-4 left-4 z-[900] rounded-xl border border-slate-200 bg-white/92 px-3 py-2 text-[11px] font-bold text-slate-500 shadow-sm backdrop-blur">
           {labels.dragToPan} - {labels.wheelToZoom}
         </div>
       </div>
@@ -1525,9 +1602,9 @@ function ActivityRow({
   const links = linkedAssumptions(activity, assumptions);
 
   return (
-    <div className="grid grid-cols-[44px_minmax(0,1fr)] gap-3 rounded-[8px] border border-slate-100 bg-white p-2 shadow-sm">
+    <div className="grid grid-cols-[44px_minmax(0,1fr)] gap-3 rounded-xl border border-slate-100 bg-white p-2 shadow-sm">
       <div
-        className={`flex size-11 items-center justify-center rounded-[8px] bg-gradient-to-br text-sm font-black ${activityTone(
+        className={`flex size-11 items-center justify-center rounded-xl bg-gradient-to-br text-sm font-black ${activityTone(
           index
         )}`}
         title={activity.imageHint}
@@ -1562,10 +1639,12 @@ function ActivityRow({
             <Timer className="size-3" />
             {formatMinutes(activity.travelTimeMinutes, labels)}
           </span>
-          <span className="inline-flex items-center gap-1 rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-bold text-slate-600">
-            <Tickets className="size-3" />
-            {labels.impactLabels[activity.bookingRisk]}
-          </span>
+          {activity.bookingRisk === "High" ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-bold text-rose-700">
+              <Tickets className="size-3" />
+              {labels.warningTypeLabels.bookingRisk}: {labels.impactLabels[activity.bookingRisk]}
+            </span>
+          ) : null}
           {links.map((assumption) => (
             <span
               key={assumption.id}
@@ -1586,10 +1665,10 @@ function DayCard({ day, assumptions, labels }: { day: ItineraryDay; assumptions:
   return (
     <article
       id={`day-plan-${day.dayNumber}`}
-      className="scroll-mt-28 rounded-[8px] border border-blue-200 bg-white p-3 shadow-[0_20px_48px_rgba(26,35,67,0.1)]"
+      className="scroll-mt-28 rounded-xl border border-blue-200 bg-white p-3 shadow-[0_10px_30px_rgba(26,35,67,0.07)]"
     >
-      <div className="rounded-[8px] border border-blue-100 bg-gradient-to-br from-white to-blue-50 px-3 py-3 text-center">
-        <div className="mx-auto flex size-8 items-center justify-center rounded-[8px] bg-white text-blue-700 shadow-sm">
+      <div className="rounded-xl border border-blue-100 bg-gradient-to-br from-white to-blue-50 px-3 py-3 text-center">
+        <div className="mx-auto flex size-8 items-center justify-center rounded-xl bg-white text-blue-700 shadow-sm">
           <CalendarDays className="size-4" />
         </div>
         <h3 className="mt-2 text-lg font-black text-slate-950">{formatDay(labels, day.dayNumber)}</h3>
@@ -1599,7 +1678,7 @@ function DayCard({ day, assumptions, labels }: { day: ItineraryDay; assumptions:
       <p className="mt-3 text-xs font-semibold leading-5 text-slate-600">{day.theme}</p>
 
       {day.accommodation ? (
-        <div className="mt-3 rounded-[8px] border border-sky-100 bg-sky-50/70 p-2">
+        <div className="mt-3 rounded-xl border border-sky-100 bg-sky-50/70 p-2">
           <div className="flex items-center gap-2 text-xs font-black text-sky-800">
             <Bed className="size-3.5" />
             {labels.accommodation}
@@ -1617,15 +1696,15 @@ function DayCard({ day, assumptions, labels }: { day: ItineraryDay; assumptions:
       </div>
 
       <div className="mt-3 grid grid-cols-3 gap-2">
-        <div className="rounded-[8px] bg-slate-50 p-2 text-center">
+        <div className="rounded-xl bg-slate-50 p-2 text-center">
           <p className="text-[10px] font-bold uppercase text-slate-400">{labels.walk}</p>
           <p className="text-xs font-black text-slate-800">{day.totalWalkingKm.toFixed(1)} km</p>
         </div>
-        <div className="rounded-[8px] bg-slate-50 p-2 text-center">
+        <div className="rounded-xl bg-slate-50 p-2 text-center">
           <p className="text-[10px] font-bold uppercase text-slate-400">{labels.travel}</p>
           <p className="text-xs font-black text-slate-800">{formatMinutes(day.totalTravelTimeMinutes, labels)}</p>
         </div>
-        <div className="rounded-[8px] bg-slate-50 p-2 text-center">
+        <div className="rounded-xl bg-slate-50 p-2 text-center">
           <p className="text-[10px] font-bold uppercase text-slate-400">{labels.cost}</p>
           <p className="text-xs font-black text-slate-800">EUR {day.estimatedCostEur}</p>
         </div>
@@ -1633,15 +1712,18 @@ function DayCard({ day, assumptions, labels }: { day: ItineraryDay; assumptions:
 
       {day.costBreakdown.length > 0 ? (
         <div className="mt-3 flex flex-wrap gap-1.5">
-          {day.costBreakdown.slice(0, 4).map((item) => (
-            <span key={item.id} className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">
-              {labels.costCategoryLabels[item.category]}: EUR {item.amountEur}
-            </span>
-          ))}
+          {day.costBreakdown
+            .filter((item) => item.category !== "other" && item.amountEur > 0)
+            .slice(0, 4)
+            .map((item) => (
+              <span key={item.id} className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">
+                {labels.costCategoryLabels[item.category]}: EUR {item.amountEur}
+              </span>
+            ))}
         </div>
       ) : null}
 
-      <div className="mt-3 rounded-[8px] border border-violet-100 bg-violet-50/70 p-3">
+      <div className="mt-3 rounded-xl border border-violet-100 bg-violet-50/70 p-3">
         <p className="text-xs font-bold text-violet-800">{labels.pacingNote}</p>
         <p className="mt-1 text-xs leading-5 text-violet-700">{day.pacingNote}</p>
       </div>
@@ -1649,74 +1731,6 @@ function DayCard({ day, assumptions, labels }: { day: ItineraryDay; assumptions:
   );
 }
 
-function OptionHeader({
-  itinerary,
-  selectedOption,
-  onSelectOption,
-  labels
-}: {
-  itinerary: Itinerary;
-  selectedOption: ItineraryOption;
-  onSelectOption: (id: string) => void;
-  labels: UIText;
-}) {
-  return (
-    <div className="relative rounded-[8px] border border-slate-200 bg-white p-4 shadow-[0_18px_50px_rgba(26,35,67,0.09)]">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex min-w-0 items-center gap-4">
-          <div className="flex size-24 shrink-0 items-center justify-center overflow-hidden rounded-[8px] bg-gradient-to-br from-orange-100 via-blue-100 to-violet-100 text-4xl font-black text-indigo-700 shadow-inner">
-            {itinerary.destination.slice(0, 1)}
-          </div>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="truncate text-3xl font-black text-slate-950">{itinerary.destination}</h2>
-              <span className="rounded-full bg-violet-50 px-3 py-1 text-[11px] font-bold text-violet-700">
-                {itinerary.durationDays} {labels.dayPlan}
-              </span>
-            </div>
-            <p className="mt-2 max-w-3xl text-sm font-semibold leading-6 text-blue-900/65">{itinerary.summary}</p>
-          </div>
-        </div>
-        <div className="grid min-w-[190px] grid-cols-2 gap-2 rounded-[8px] border border-slate-100 bg-slate-50 p-2">
-          <div>
-            <p className="text-[10px] font-bold uppercase text-slate-400">{labels.selected}</p>
-            <p className="truncate text-sm font-black text-slate-800">{selectedOption.title}</p>
-          </div>
-          <div>
-            <p className="text-[10px] font-bold uppercase text-slate-400">{labels.estimate}</p>
-            <p className="text-sm font-black text-slate-800">
-              {itinerary.currency} {selectedOption.estimatedTotalCostEur}
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-4 grid gap-2 lg:grid-cols-2">
-        {itinerary.options.map((option, index) => (
-          <button
-            key={option.id}
-            onClick={() => onSelectOption(option.id)}
-            className={`rounded-[8px] border px-3 py-3 text-left transition ${
-              option.id === selectedOption.id
-                ? "border-orange-300 bg-orange-50 text-orange-900 shadow-sm"
-                : "border-slate-200 bg-white text-slate-700 hover:border-violet-200"
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-[8px] bg-white text-sm font-black shadow-sm">
-                {index + 1}
-              </span>
-              <div className="min-w-0">
-                <p className="truncate text-sm font-black">{option.title}</p>
-                <p className="line-clamp-2 text-xs font-semibold leading-5 opacity-75">{option.fitSummary}</p>
-              </div>
-            </div>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 function InfluenceLayer({ assumptions, labels }: { assumptions: Assumption[]; labels: UIText }) {
   if (assumptions.length === 0) {
@@ -1728,7 +1742,7 @@ function InfluenceLayer({ assumptions, labels }: { assumptions: Assumption[]; la
       {assumptions.map((assumption) => (
         <span
           key={assumption.id}
-          className={`inline-flex items-center gap-1 rounded-[8px] border px-3 py-2 text-xs font-black ${influenceTone(
+          className={`inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-black ${influenceTone(
             assumption.status
           )}`}
         >
@@ -1785,7 +1799,7 @@ function LegacyItineraryMap({ selectedOption, labels }: { selectedOption: Itiner
       {positionedPlaces.length === 0 ? (
         <EmptyState title={labels.locationsUnavailableTitle} body={labels.locationsUnavailableBody} />
       ) : (
-        <div className="overflow-hidden rounded-[8px] border border-slate-200 bg-slate-50">
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
           <div className="flex items-center justify-between border-b border-slate-200 bg-white px-3 py-2">
             <div className="flex items-center gap-2 text-xs font-black text-slate-600">
               <Route className="size-3.5 text-indigo-600" />
@@ -1857,7 +1871,7 @@ function LegacyItineraryMap({ selectedOption, labels }: { selectedOption: Itiner
       )}
 
       {unavailablePlaces.length > 0 ? (
-        <div className="mt-3 rounded-[8px] border border-amber-100 bg-amber-50 p-3">
+        <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50 p-3">
           <p className="text-xs font-black text-amber-800">{labels.partialLocationWarning}</p>
           <div className="mt-2 flex flex-wrap gap-1.5">
             {unavailablePlaces.slice(0, 8).map((place) => (
@@ -1876,7 +1890,7 @@ function LegacyItineraryMap({ selectedOption, labels }: { selectedOption: Itiner
             const to = positionedById.get(segment.toPlaceId);
 
             return (
-              <div key={routeSegmentRenderKey(segment, index)} className="rounded-[8px] border border-slate-200 bg-white p-2 text-xs font-semibold text-slate-600">
+              <div key={routeSegmentRenderKey(segment, index)} className="rounded-xl border border-slate-200 bg-white p-2 text-xs font-semibold text-slate-600">
                 <div className="flex items-center gap-2 font-black text-slate-800">
                   <Bus className="size-3.5 text-indigo-600" />
                   <span className="truncate">
@@ -1950,12 +1964,6 @@ function ItineraryMap({
     (longest, segment) => Math.max(longest, segment.estimatedTravelTimeMinutes),
     0
   );
-  const baseChanges = selectedOption.days.slice(1).filter((day, index) => {
-    const previous = selectedOption.days[index];
-    const previousArea = previous.accommodation?.area || "";
-    const nextArea = day.accommodation?.area || "";
-    return day.accommodation?.changeFromPreviousNight || (previousArea && nextArea && normalizedPlaceText(previousArea) !== normalizedPlaceText(nextArea));
-  }).length;
   const openIssueCount = relevantWarnings.length + unavailablePlaces.length + missingRouteCount;
   const timelineItems = buildTripTimelineItems(selectedOption, places);
   const selectedDay = selectedPlace?.dayNumber
@@ -1996,9 +2004,9 @@ function ItineraryMap({
   }
 
   return (
-    <section className="overflow-hidden rounded-[8px] border border-slate-200 bg-white shadow-[0_22px_70px_rgba(26,35,67,0.12)]">
+    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_14px_40px_rgba(26,35,67,0.08)]">
       <div className="relative">
-        <LeafletRouteMap
+        <GoogleRouteMap
           labels={labels}
           places={viewPlaces}
           routeSegments={routeSegments}
@@ -2013,7 +2021,7 @@ function ItineraryMap({
         />
 
         <div className="absolute left-4 top-4 z-[900] flex max-w-[calc(100%-32px)] flex-col gap-2 md:left-5 md:top-5">
-          <div className="flex w-fit max-w-full items-center gap-2 rounded-[8px] border border-slate-200 bg-white/94 p-2 shadow-[0_18px_48px_rgba(15,23,42,0.14)] backdrop-blur">
+          <div className="flex w-fit max-w-full items-center gap-2 rounded-xl border border-slate-200 bg-white/94 p-2 shadow-[0_18px_48px_rgba(15,23,42,0.14)] backdrop-blur">
             <div className="min-w-0 px-2">
               <p className="text-[11px] font-black uppercase text-indigo-600">{labels.mapEyebrow}</p>
               <h2 className="truncate text-base font-black text-slate-950 sm:text-lg">{itinerary.destination}</h2>
@@ -2022,7 +2030,7 @@ function ItineraryMap({
               <select
                 value={selectedOption.id}
                 onChange={(event) => onSelectOption(event.target.value)}
-                className="h-9 max-w-[210px] rounded-[8px] border border-slate-200 bg-white px-2 text-xs font-black text-slate-700 outline-none"
+                className="h-9 max-w-[210px] rounded-xl border border-slate-200 bg-white px-2 text-xs font-black text-slate-700 outline-none"
               >
                 {itinerary.options.map((option) => (
                   <option key={option.id} value={option.id}>
@@ -2071,7 +2079,7 @@ function ItineraryMap({
             return (
               <div
                 key={metric.label}
-                className="min-w-[118px] rounded-[8px] border border-slate-200 bg-white/94 px-3 py-2 shadow-[0_14px_38px_rgba(15,23,42,0.12)] backdrop-blur"
+                className="min-w-[118px] rounded-xl border border-slate-200 bg-white/94 px-3 py-2 shadow-[0_14px_38px_rgba(15,23,42,0.12)] backdrop-blur"
               >
                 <p className="flex items-center gap-1.5 text-[10px] font-black uppercase text-slate-400">
                   <Icon className="size-3.5" />
@@ -2088,12 +2096,12 @@ function ItineraryMap({
           {routeQualityLabel}
         </div>
 
-        <div className="absolute right-4 top-28 z-[900] hidden w-[300px] rounded-[8px] border border-slate-200 bg-white/94 p-3 shadow-[0_16px_44px_rgba(15,23,42,0.12)] backdrop-blur xl:block">
+        <div className="absolute right-4 top-28 z-[900] hidden w-[300px] rounded-xl border border-slate-200 bg-white/94 p-3 shadow-[0_16px_44px_rgba(15,23,42,0.12)] backdrop-blur xl:block">
           <p className="text-[11px] font-black uppercase text-slate-400">{labels.routeSummary}</p>
           <div className="mt-3 space-y-2">
             {[
               { label: labels.longestTransfer, value: formatMinutes(longestTransfer, labels), icon: Bus },
-              { label: labels.baseChanges, value: String(baseChanges), icon: Bed },
+              { label: labels.routeReal, value: `${verifiedRouteCount}/${allRouteSegments.length}`, icon: Navigation2 },
               { label: labels.estimatedSegments, value: String(estimatedSegmentCount), icon: Route },
               { label: labels.openIssues, value: String(openIssueCount), icon: AlertTriangle }
             ].map((item) => {
@@ -2114,34 +2122,47 @@ function ItineraryMap({
           <button
             type="button"
             onClick={() => onOpenReview?.(null)}
-            className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-[8px] border border-indigo-200 bg-indigo-50 text-xs font-black text-indigo-700 transition hover:bg-indigo-100"
+            className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 text-xs font-black text-indigo-700 transition hover:bg-indigo-100"
           >
             {labels.fixIssues}
           </button>
         </div>
 
         {transportModes.length > 0 ? (
-          <div className="absolute right-4 top-[330px] z-[900] hidden rounded-[8px] border border-slate-200 bg-white/94 p-3 shadow-[0_16px_44px_rgba(15,23,42,0.12)] backdrop-blur xl:block">
-            <p className="text-[11px] font-black uppercase text-slate-400">{labels.transportLegend}</p>
-            <div className="mt-2 space-y-2">
+          <div className="absolute right-4 top-[330px] z-[900] hidden w-[208px] rounded-2xl border border-slate-200/80 bg-white/95 p-3.5 shadow-[0_16px_44px_rgba(15,23,42,0.14)] backdrop-blur xl:block">
+            <div className="flex items-center gap-2">
+              <Navigation2 className="size-3.5 text-indigo-600" />
+              <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">{labels.transportLegend}</p>
+            </div>
+            <div className="mt-3 space-y-2">
               {transportModes.map((mode) => (
-                <div key={mode.label} className="flex items-center gap-2 text-xs font-bold text-slate-700">
-                  <span
-                    className="h-0.5 w-8 rounded-full"
-                    style={{
-                      backgroundColor: mode.color,
-                      borderTop: mode.dashArray ? `2px dashed ${mode.color}` : undefined
-                    }}
-                  />
-                  <span className="max-w-28 truncate">{mode.label}</span>
+                <div key={mode.label} className="flex items-center gap-2.5 text-xs font-bold text-slate-700">
+                  <svg width="30" height="10" viewBox="0 0 30 10" className="shrink-0" aria-hidden="true">
+                    <line x1="2" y1="5" x2="28" y2="5" stroke={mode.color} strokeWidth="3.5" strokeLinecap="round" />
+                  </svg>
+                  <span className="truncate">{mode.label}</span>
                 </div>
               ))}
+            </div>
+            <div className="mt-3 space-y-1.5 border-t border-slate-100 pt-2.5">
+              <div className="flex items-center gap-2.5 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                <svg width="30" height="10" viewBox="0 0 30 10" className="shrink-0" aria-hidden="true">
+                  <line x1="2" y1="5" x2="28" y2="5" stroke="#475569" strokeWidth="3.5" strokeLinecap="round" />
+                </svg>
+                <span className="truncate">{labels.routeReal}</span>
+              </div>
+              <div className="flex items-center gap-2.5 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                <svg width="30" height="10" viewBox="0 0 30 10" className="shrink-0" aria-hidden="true">
+                  <line x1="2" y1="5" x2="28" y2="5" stroke="#94a3b8" strokeWidth="3.5" strokeLinecap="round" strokeDasharray="0.1 6" />
+                </svg>
+                <span className="truncate">{labels.routeEstimated}</span>
+              </div>
             </div>
           </div>
         ) : null}
 
         {selectedPlace ? (
-          <div className="absolute left-4 top-[150px] z-[900] w-[min(340px,calc(100%-32px))] rounded-[8px] border border-slate-200 bg-white/96 p-4 shadow-[0_22px_70px_rgba(15,23,42,0.2)] backdrop-blur md:left-5 md:top-[150px]">
+          <div className="absolute left-4 top-[150px] z-[900] w-[min(340px,calc(100%-32px))] rounded-xl border border-slate-200 bg-white/96 p-4 shadow-[0_22px_70px_rgba(15,23,42,0.2)] backdrop-blur md:left-5 md:top-[150px]">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-[11px] font-black uppercase text-indigo-600">
@@ -2150,7 +2171,7 @@ function ItineraryMap({
                 <h3 className="mt-1 line-clamp-2 text-xl font-black text-slate-950">{selectedPlace.title}</h3>
                 <p className="mt-1 truncate text-xs font-bold text-slate-500">{selectedPlace.location}</p>
               </div>
-              <div className="flex size-12 shrink-0 items-center justify-center rounded-[8px] border-2 bg-gradient-to-br from-orange-100 via-blue-100 to-violet-100 text-sm font-black text-slate-800 shadow-inner" style={{ borderColor: dayColor(selectedPlace.dayNumber) }}>
+              <div className="flex size-12 shrink-0 items-center justify-center rounded-xl border-2 bg-gradient-to-br from-orange-100 via-blue-100 to-violet-100 text-sm font-black text-slate-800 shadow-inner" style={{ borderColor: dayColor(selectedPlace.dayNumber) }}>
                 {selectedPlace.markerLabel}
               </div>
             </div>
@@ -2173,7 +2194,7 @@ function ItineraryMap({
             <button
               type="button"
               onClick={() => onOpenReview?.(selectedPlace.dayNumber)}
-              className="mt-4 flex h-10 w-full items-center justify-center gap-2 rounded-[8px] border border-indigo-200 bg-indigo-50 text-sm font-black text-indigo-700 transition hover:border-indigo-300 hover:bg-indigo-100"
+              className="mt-4 flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 text-sm font-black text-indigo-700 transition hover:border-indigo-300 hover:bg-indigo-100"
             >
               {labels.openInReviewPlanning}
             </button>
@@ -2181,7 +2202,7 @@ function ItineraryMap({
         ) : null}
 
         {unavailablePlaces.length > 0 || relevantWarnings.length > 0 || estimatedSegmentCount > 0 ? (
-          <div className="absolute bottom-28 right-4 z-[900] hidden w-[min(320px,calc(100%-32px))] rounded-[8px] border border-amber-200 bg-amber-50/95 p-3 text-xs font-semibold leading-5 text-amber-900 shadow-[0_16px_44px_rgba(15,23,42,0.12)] backdrop-blur lg:block">
+          <div className="absolute bottom-28 right-4 z-[900] hidden w-[min(320px,calc(100%-32px))] rounded-xl border border-amber-200 bg-amber-50/95 p-3 text-xs font-semibold leading-5 text-amber-900 shadow-[0_16px_44px_rgba(15,23,42,0.12)] backdrop-blur lg:block">
             <button
               type="button"
               onClick={() => setAttentionExpanded((current) => !current)}
@@ -2216,7 +2237,7 @@ function ItineraryMap({
           </div>
         ) : null}
 
-        <div className="absolute bottom-28 left-4 z-[900] hidden w-[min(320px,calc(100%-32px))] rounded-[8px] border border-slate-200 bg-white/94 p-3 shadow-[0_16px_44px_rgba(15,23,42,0.12)] backdrop-blur lg:block">
+        <div className="absolute bottom-28 left-4 z-[900] hidden w-[min(320px,calc(100%-32px))] rounded-xl border border-slate-200 bg-white/94 p-3 shadow-[0_16px_44px_rgba(15,23,42,0.12)] backdrop-blur lg:block">
           <button
             type="button"
             onClick={() => setRouteReasonExpanded((current) => !current)}
@@ -2274,7 +2295,7 @@ function ItineraryMap({
                     key={item.id}
                     type="button"
                     onClick={() => handleTimelineSelect(item)}
-                    className={`min-w-[170px] rounded-[8px] border px-4 py-2 text-left transition ${
+                    className={`min-w-[170px] rounded-xl border px-4 py-2 text-left transition ${
                       active
                         ? "border-emerald-400 bg-emerald-50 text-emerald-900 shadow-sm"
                         : "border-slate-200 bg-white text-slate-700 hover:border-indigo-200"
@@ -2304,36 +2325,34 @@ function CostBreakdownPanel({
 }) {
   const dayItems = selectedOption.days.flatMap((day) => day.costBreakdown);
   const costItems = selectedOption.costBreakdown.length > 0 ? selectedOption.costBreakdown : aggregateCosts(dayItems);
+  const hasRoughEstimates = costItems.some((item) => item.isRoughEstimate);
 
   return (
-    <Panel title={labels.costBreakdownTitle} eyebrow={labels.costBreakdownEyebrow} icon={<WalletCards className="size-4" />}>
+    <Panel
+      title={labels.costBreakdownTitle}
+      eyebrow={hasRoughEstimates ? `${labels.costBreakdownEyebrow} · ${labels.roughEstimate}` : labels.costBreakdownEyebrow}
+      icon={<WalletCards className="size-4" />}
+    >
       {costItems.length === 0 ? (
         <EmptyState title={labels.noCostBreakdownTitle} body={labels.noCostBreakdownBody} />
       ) : (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {costItems.map((item) => (
-            <div key={item.id} className="rounded-[8px] border border-slate-200 bg-white p-3 shadow-sm">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-black text-slate-950">
-                    {labels.costCategoryLabels[item.category] || item.label}
-                  </p>
-                  <p className="mt-1 text-xs font-semibold text-slate-500">{item.basis}</p>
-                </div>
-                {item.isRoughEstimate ? (
-                  <span className="shrink-0 rounded-full border border-amber-100 bg-amber-50 px-2 py-1 text-[11px] font-bold text-amber-700">
-                    {labels.roughEstimate}
-                  </span>
-                ) : null}
+            <div key={item.id} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-black text-slate-950">
+                  {labels.costCategoryLabels[item.category] || item.label}
+                </p>
+                <p className="mt-1 text-xs font-semibold text-slate-500">{item.basis}</p>
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2">
-                <div className="rounded-[8px] bg-slate-50 p-2">
+                <div className="rounded-xl bg-slate-50 p-2">
                   <p className="text-[10px] font-black uppercase text-slate-400">{labels.total}</p>
                   <p className="text-xs font-black text-slate-800">
                     {currency} {item.totalEur ?? item.amountEur}
                   </p>
                 </div>
-                <div className="rounded-[8px] bg-slate-50 p-2">
+                <div className="rounded-xl bg-slate-50 p-2">
                   <p className="text-[10px] font-black uppercase text-slate-400">{labels.perDay}</p>
                   <p className="text-xs font-black text-slate-800">
                     {currency} {item.perDayEur ?? Math.round(item.amountEur / Math.max(1, selectedOption.days.length))}
@@ -2379,7 +2398,7 @@ function ConstraintWarnings({ warnings, labels }: { warnings: ConstraintWarning[
       ) : (
         <div className="grid gap-3 lg:grid-cols-2">
           {warnings.map((warning) => (
-            <div key={warning.id} className="rounded-[8px] border border-slate-200 bg-white p-3 shadow-sm">
+            <div key={warning.id} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-black text-slate-950">{labels.warningTypeLabels[warning.type]}</p>
@@ -2390,7 +2409,7 @@ function ConstraintWarnings({ warnings, labels }: { warnings: ConstraintWarning[
                 <ImpactBadge impact={warning.impact} labels={labels.impactLabels} />
               </div>
               <p className="mt-2 text-xs font-semibold leading-5 text-slate-600">{warning.message}</p>
-              <div className="mt-3 rounded-[8px] bg-slate-50 p-2">
+              <div className="mt-3 rounded-xl bg-slate-50 p-2">
                 <p className="text-[10px] font-black uppercase text-slate-400">{labels.recommendation}</p>
                 <p className="mt-1 text-xs font-semibold leading-5 text-slate-700">{warning.recommendation}</p>
               </div>
@@ -2445,7 +2464,7 @@ function RecommendationPanels({
   return (
     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
       {panels.slice(0, 4).map((panel) => (
-        <div key={panel.id} className={`rounded-[8px] border p-3 shadow-sm ${panel.tone}`}>
+        <div key={panel.id} className={`rounded-xl border p-3 shadow-sm ${panel.tone}`}>
           <p className="text-[11px] font-black uppercase text-blue-900/45">{panel.eyebrow}</p>
           <h3 className="mt-1 truncate text-sm font-black text-slate-950">{panel.title}</h3>
           <p className="mt-2 line-clamp-3 text-xs font-semibold leading-5 text-slate-600">{panel.body}</p>
@@ -2453,6 +2472,369 @@ function RecommendationPanels({
         </div>
       ))}
     </div>
+  );
+}
+
+function paceTone(pace: PlanDigest["paceOverall"]) {
+  if (pace === "Packed") {
+    return "border-rose-200 bg-rose-50 text-rose-700";
+  }
+
+  if (pace === "Relaxed") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+
+  return "border-indigo-200 bg-indigo-50 text-indigo-700";
+}
+
+function PlanAlerts({
+  warnings,
+  labels,
+  onQuickAdjust
+}: {
+  warnings: ConstraintWarning[];
+  labels: UIText;
+  onQuickAdjust?: (instruction: string) => void;
+}) {
+  const [dismissed, setDismissed] = useState<string[]>([]);
+  const ranked = warnings
+    .filter((warning) => warning.status === "Open" && !dismissed.includes(warning.id))
+    .sort((a, b) => (a.impact === "High" ? 0 : a.impact === "Medium" ? 1 : 2) - (b.impact === "High" ? 0 : b.impact === "Medium" ? 1 : 2))
+    .slice(0, 2);
+
+  if (ranked.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-2">
+      {ranked.map((warning) => {
+        const isBudget = warning.type === "budgetMismatch";
+        const actionLabel = isBudget ? labels.trimBudget : labels.relaxPlan;
+        const instruction = isBudget ? labels.trimBudgetInstruction : labels.relaxPlanInstruction;
+
+        return (
+          <div
+            key={warning.id}
+            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50/85 px-3.5 py-2.5"
+          >
+            <div className="flex min-w-0 items-center gap-2.5">
+              <AlertTriangle className="size-4 shrink-0 text-amber-600" />
+              <p className="min-w-0 text-xs font-bold leading-5 text-amber-900">
+                <span className="font-black">{labels.warningTypeLabels[warning.type]}: </span>
+                <span className="font-semibold">{warning.message}</span>
+              </p>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              {onQuickAdjust ? (
+                <button
+                  type="button"
+                  onClick={() => onQuickAdjust(instruction)}
+                  className="rounded-lg bg-amber-600 px-3 py-1.5 text-[11px] font-black text-white transition hover:bg-amber-700"
+                >
+                  {actionLabel}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setDismissed((current) => [...current, warning.id])}
+                className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-[11px] font-black text-amber-800 transition hover:bg-amber-100"
+              >
+                {labels.keepAmbitious}
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function PassportOverview({
+  itinerary,
+  selectedOption,
+  digest,
+  onSelectOption,
+  labels
+}: {
+  itinerary: Itinerary;
+  selectedOption: ItineraryOption;
+  digest: PlanDigest;
+  onSelectOption: (id: string) => void;
+  labels: UIText;
+}) {
+  const cityCount = new Set(digest.days.map((day) => normalizedPlaceText(day.city))).size;
+
+  return (
+    <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(26,35,67,0.07)] sm:p-5">
+      <div className="pointer-events-none absolute -right-4 -top-4 hidden rotate-12 rounded-full border-4 border-double border-emerald-300/70 p-4 text-emerald-500/70 sm:block">
+        <Plane className="size-6" />
+      </div>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">{labels.planOverview}</p>
+          <h2 className="display-serif mt-1 truncate text-3xl font-black text-slate-950">{itinerary.destination}</h2>
+          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+            <span className="stamp-badge text-indigo-700">
+              <CalendarDays className="size-3.5" />
+              {itinerary.durationDays} {labels.dayPlan}
+            </span>
+            <span className="stamp-badge text-slate-600">
+              <MapPin className="size-3.5" />
+              {cityCount} {labels.cities}
+            </span>
+            <span className={`stamp-badge ${paceTone(digest.paceOverall).split(" ").pop()}`}>
+              <Gauge className="size-3.5" />
+              {labels.paceLabels[digest.paceOverall]}
+            </span>
+          </div>
+          <p className="mt-3 line-clamp-2 max-w-2xl text-sm font-semibold leading-6 text-slate-600">{itinerary.summary}</p>
+        </div>
+        <div className="grid w-full shrink-0 grid-cols-2 gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50/70 p-3 lg:w-[280px]">
+          <div className="min-w-0">
+            <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">{labels.selected}</p>
+            <p className="mt-0.5 truncate text-sm font-black text-slate-900">{selectedOption.title}</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">{labels.estimatedTotal}</p>
+            <p className="display-serif mt-0.5 text-lg font-black text-slate-950">
+              {itinerary.currency === "EUR" ? "€" : itinerary.currency} {digest.totalCostEur}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {itinerary.options.length > 1 ? (
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          {itinerary.options.map((option) => (
+            <button
+              key={option.id}
+              onClick={() => onSelectOption(option.id)}
+              className={`truncate rounded-xl border px-3 py-2 text-left text-xs font-black transition ${
+                option.id === selectedOption.id
+                  ? "border-indigo-300 bg-indigo-50 text-indigo-900"
+                  : "border-slate-200 bg-white text-slate-600 hover:border-indigo-200"
+              }`}
+              title={option.fitSummary}
+            >
+              {option.title}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CompactDayRow({
+  day,
+  digest,
+  assumptions,
+  labels
+}: {
+  day: ItineraryDay;
+  digest: PlanDigest["days"][number] | undefined;
+  assumptions: Assumption[];
+  labels: UIText;
+}) {
+  const stops = digest?.stops ?? day.activities.slice(0, 3).map((activity) => ({ time: activity.time, title: activity.title }));
+  const extraStops = day.activities.length - stops.length;
+  const pace = digest?.pace ?? "Balanced";
+  const walkingKm = digest?.walkingKm ?? day.totalWalkingKm;
+  const costEur = digest?.costEur ?? day.estimatedCostEur;
+
+  return (
+    <details id={`day-row-${day.dayNumber}`} className="group rounded-xl border border-slate-200 bg-white shadow-sm">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-3 px-3.5 py-3">
+        <span
+          className="flex size-10 shrink-0 items-center justify-center rounded-full border-2 border-dashed text-sm font-black"
+          style={{ borderColor: dayColor(day.dayNumber), color: dayColor(day.dayNumber) }}
+        >
+          {day.dayNumber}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="display-serif truncate text-sm font-black uppercase tracking-wide text-slate-950">
+            {digest?.city ?? day.title}
+          </p>
+          <p className="mt-0.5 truncate text-xs font-semibold text-slate-500">
+            {stops.map((stop) => `${stop.time} ${stop.title}`).join(" · ")}
+            {extraStops > 0 ? ` · +${extraStops} ${labels.moreStops}` : ""}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className="hidden items-center gap-1 rounded-full bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-600 sm:inline-flex">
+            <Footprints className="size-3" />
+            {walkingKm.toFixed(1)} km
+          </span>
+          <span className="hidden items-center gap-1 rounded-full bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-600 sm:inline-flex">
+            <Euro className="size-3" />
+            {costEur}
+          </span>
+          <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-black ${paceTone(pace)}`}>
+            <Gauge className="size-3" />
+            {labels.paceLabels[pace]}
+          </span>
+          <ChevronDown className="size-4 shrink-0 text-slate-400 transition group-open:rotate-180" />
+        </div>
+      </summary>
+      <div className="border-t border-slate-100 p-3">
+        <DayCard day={day} assumptions={assumptions} labels={labels} />
+      </div>
+    </details>
+  );
+}
+
+const COST_CATEGORY_ICONS: Partial<Record<CostBreakdownItem["category"], typeof Bed>> = {
+  accommodation: Bed,
+  food: Utensils,
+  transport: Bus,
+  localTransit: Bus,
+  attractions: Tickets,
+  optionalActivities: Sparkles
+};
+
+function BudgetCompact({
+  digest,
+  selectedOption,
+  currency,
+  labels
+}: {
+  digest: PlanDigest;
+  selectedOption: ItineraryOption;
+  currency: string;
+  labels: UIText;
+}) {
+  const symbol = currency === "EUR" ? "€" : currency;
+  const visibleCategories = digest.categories.filter((item) => item.category !== "other").slice(0, 4);
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(26,35,67,0.07)]">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-slate-400">
+            <WalletCards className="size-3.5" />
+            {labels.budgetSummary}
+          </p>
+          <p className="display-serif mt-1 text-2xl font-black text-slate-950">
+            {symbol} {digest.totalCostEur}
+            <span className="ml-2 align-middle text-xs font-bold text-slate-500">
+              {symbol} {digest.perDayCostEur} / {labels.perDay.toLowerCase()}
+            </span>
+          </p>
+        </div>
+        {digest.budgetRisk !== "Low" ? (
+          <span className="stamp-badge text-rose-700">
+            {labels.budgetRiskLabel}: {labels.impactLabels[digest.budgetRisk]}
+          </span>
+        ) : null}
+      </div>
+
+      {visibleCategories.length > 0 ? (
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {visibleCategories.map((item) => {
+            const Icon = COST_CATEGORY_ICONS[item.category] ?? WalletCards;
+
+            return (
+              <div key={item.category} className="rounded-xl bg-slate-50 px-3 py-2 text-center">
+                <Icon className="mx-auto size-4 text-indigo-600" />
+                <p className="mt-1 truncate text-[10px] font-black uppercase tracking-wide text-slate-400">
+                  {labels.costCategoryLabels[item.category]}
+                </p>
+                <p className="text-xs font-black text-slate-900">
+                  {symbol} {item.totalEur}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+
+      <details className="mt-3">
+        <summary className="cursor-pointer text-xs font-black text-indigo-700">{labels.viewCostBreakdown}</summary>
+        <div className="mt-3">
+          <CostBreakdownPanel selectedOption={selectedOption} currency={currency} labels={labels} />
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function ImprovementsCollapse({
+  selectedOption,
+  warnings,
+  assumptions,
+  labels
+}: {
+  selectedOption: ItineraryOption;
+  warnings: ConstraintWarning[];
+  assumptions: Assumption[];
+  labels: UIText;
+}) {
+  const alternativeCount = selectedOption.days.reduce((sum, day) => sum + day.alternatives.length, 0);
+  const suggestionCount = alternativeCount + warnings.length;
+
+  if (suggestionCount === 0) {
+    return null;
+  }
+
+  return (
+    <details className="group rounded-2xl border border-slate-200 bg-white shadow-[0_10px_30px_rgba(26,35,67,0.07)]">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3.5">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700">
+            <Sparkles className="size-4" />
+          </span>
+          <div className="min-w-0">
+            <p className="display-serif truncate text-sm font-black text-slate-950">{labels.suggestedImprovements}</p>
+            <p className="truncate text-xs font-semibold text-slate-500">
+              {suggestionCount} {labels.improvementsAvailable}
+            </p>
+          </div>
+        </div>
+        <span className="flex shrink-0 items-center gap-1.5 text-xs font-black text-indigo-700">
+          {labels.reviewSuggestions}
+          <ChevronDown className="size-4 transition group-open:rotate-180" />
+        </span>
+      </summary>
+      <div className="space-y-4 border-t border-slate-100 p-4">
+        <RecommendationPanels selectedOption={selectedOption} warnings={warnings} labels={labels} />
+        <ConstraintWarnings warnings={warnings} labels={labels} />
+        <InfluenceLayer assumptions={assumptions} labels={labels} />
+      </div>
+    </details>
+  );
+}
+
+function SpineNav({ labels }: { labels: UIText }) {
+  const items = [
+    { id: "plan-overview", label: labels.navOverview, icon: Landmark },
+    { id: "plan-days", label: labels.navItinerary, icon: CalendarDays },
+    { id: "plan-budget", label: labels.navBudget, icon: WalletCards },
+    { id: "plan-improvements", label: labels.navImprovements, icon: Sparkles }
+  ];
+
+  return (
+    <nav className="passport-spine sticky top-24 hidden h-fit flex-col items-center gap-1.5 rounded-2xl p-2 lg:flex">
+      <span className="mb-1 flex size-9 items-center justify-center rounded-xl text-amber-200/90">
+        <Plane className="size-4" />
+      </span>
+      {items.map((item) => {
+        const Icon = item.icon;
+
+        return (
+          <button
+            key={item.id}
+            type="button"
+            title={item.label}
+            aria-label={item.label}
+            onClick={() => document.getElementById(item.id)?.scrollIntoView({ behavior: "smooth", block: "start" })}
+            className="flex size-10 items-center justify-center"
+          >
+            <Icon className="size-4" />
+          </button>
+        );
+      })}
+    </nav>
   );
 }
 
@@ -2465,7 +2847,9 @@ export function ItineraryCanvas({
   planning,
   labels,
   mode = "map",
-  onOpenReview
+  onOpenReview,
+  digests,
+  onQuickAdjust
 }: ItineraryCanvasProps) {
   if (!itinerary) {
     if (mode === "review") {
@@ -2498,28 +2882,55 @@ export function ItineraryCanvas({
     );
   }
 
+  // Presentation Agent digest for the selected option; falls back to the same
+  // deterministic computation client-side for sessions saved before digests.
+  const digest =
+    digests?.find((item) => item.optionId === selectedOption.id) ??
+    buildPlanDigests(itinerary).find((item) => item.optionId === selectedOption.id) ??
+    buildPlanDigests(itinerary)[0];
+  const dayDigestByNumber = new Map(digest.days.map((day) => [day.dayNumber, day]));
+
   return (
-    <div className="space-y-4">
-      <Panel title={labels.reviewPlanningWorkspace} eyebrow={labels.reviewPlanningEyebrow} icon={<Route className="size-4" />}>
-        <div className="canvas-grid relative overflow-hidden rounded-[8px] border border-slate-200 bg-white/78 p-4">
-          <OptionHeader itinerary={itinerary} selectedOption={selectedOption} onSelectOption={onSelectOption} labels={labels} />
-          <InfluenceLayer assumptions={assumptions} labels={labels} />
+    <div className="flex gap-3">
+      <SpineNav labels={labels} />
+      <div className="min-w-0 flex-1 space-y-3">
+        <PlanAlerts warnings={warnings} labels={labels} onQuickAdjust={onQuickAdjust} />
 
-          <div className="mt-4 grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
-            {selectedOption.days.map((day) => (
-              <DayCard key={day.dayNumber} day={day} assumptions={assumptions} labels={labels} />
-            ))}
-          </div>
+        <section id="plan-overview" className="scroll-mt-24">
+          <PassportOverview
+            itinerary={itinerary}
+            selectedOption={selectedOption}
+            digest={digest}
+            onSelectOption={onSelectOption}
+            labels={labels}
+          />
+        </section>
 
-          <div className="mt-4 flex justify-center text-center text-[11px] font-bold text-blue-900/45">
-            {labels.canvasInfluenceNote}
-          </div>
-        </div>
-      </Panel>
+        <section id="plan-days" className="scroll-mt-24 space-y-2">
+          {selectedOption.days.map((day) => (
+            <CompactDayRow
+              key={day.dayNumber}
+              day={day}
+              digest={dayDigestByNumber.get(day.dayNumber)}
+              assumptions={assumptions}
+              labels={labels}
+            />
+          ))}
+        </section>
 
-      <CostBreakdownPanel selectedOption={selectedOption} currency={itinerary.currency} labels={labels} />
-      <RecommendationPanels selectedOption={selectedOption} warnings={warnings} labels={labels} />
-      <ConstraintWarnings warnings={warnings} labels={labels} />
+        <section id="plan-budget" className="scroll-mt-24">
+          <BudgetCompact digest={digest} selectedOption={selectedOption} currency={itinerary.currency} labels={labels} />
+        </section>
+
+        <section id="plan-improvements" className="scroll-mt-24">
+          <ImprovementsCollapse
+            selectedOption={selectedOption}
+            warnings={warnings}
+            assumptions={assumptions}
+            labels={labels}
+          />
+        </section>
+      </div>
     </div>
   );
 }

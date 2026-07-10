@@ -8,13 +8,14 @@ import type { AgentTrace, MemoryStatus, UserMemory } from "@/types/travel";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function trace(agent: AgentTrace["agent"], summary: string, count: number): AgentTrace {
+function trace(agent: AgentTrace["agent"], summary: string, count: number, durationMs?: number): AgentTrace {
   return {
     agent,
     summary,
     status: "Complete",
     count,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    ...(durationMs !== undefined ? { durationMs } : {})
   };
 }
 
@@ -52,11 +53,16 @@ function errorResponse(error: unknown) {
 export async function POST(request: Request) {
   try {
     const body = AnalyzeRequestSchema.parse(await request.json());
+    const startedAt = Date.now();
     const conflicts = await runConflictDetectorAgent(body);
+    const durationMs = Date.now() - startedAt;
 
     const response = AnalyzeResponseSchema.parse({
       checkpointDecision: conflicts.checkpointDecision,
-      detectedConflicts: conflicts.detectedConflicts,
+      detectedConflicts: conflicts.detectedConflicts.map((conflict) => ({
+        ...conflict,
+        sourceAgent: "Conflict Detector Agent" as const
+      })),
       learnedPreferences: body.learnedPreferences,
       assumptions: [],
       transportAssumptions: [],
@@ -65,7 +71,7 @@ export async function POST(request: Request) {
       missingPreferences: [],
       critiques: [],
       memoryStatus: memoryStatus(body.memory, body.language),
-      trace: [trace("Conflict Detector Agent", conflicts.summary, conflicts.detectedConflicts.length)]
+      trace: [trace("Conflict Detector Agent", conflicts.summary, conflicts.detectedConflicts.length, durationMs)]
     });
 
     return NextResponse.json(response);

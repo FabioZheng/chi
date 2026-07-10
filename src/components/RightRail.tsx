@@ -208,7 +208,7 @@ export function RightRail({
           {steps.map((step, index) => (
             <div
               key={step.agent}
-              className={`relative rounded-[8px] border p-3 ${
+              className={`relative rounded-xl border p-3 ${
                 step.state === "Needs User Input"
                   ? "border-orange-300 bg-orange-50"
                   : step.state === "Running"
@@ -257,7 +257,7 @@ export function RightRail({
             { label: labels.needsCheck, count: pendingHighImpact, color: "bg-orange-500", text: "text-orange-700" },
             { label: labels.missing, count: missingCount, color: "bg-rose-500", text: "text-rose-700" }
           ].map((item) => (
-            <div key={item.label} className="flex items-center justify-between rounded-[8px] bg-slate-50 px-3 py-2">
+            <div key={item.label} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2">
               <div className="flex items-center gap-2">
                 <span className={`size-2.5 rounded-full ${item.color}`} />
                 <span className={`text-xs font-black ${item.text}`}>{item.label}</span>
@@ -276,14 +276,14 @@ export function RightRail({
           <div className="flex gap-1">
             <button
               onClick={onSaveMemory}
-              className="flex size-8 items-center justify-center rounded-[8px] border border-emerald-200 bg-emerald-50 text-emerald-700"
+              className="flex size-8 items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700"
               title={labels.savePreferences}
             >
               <Save className="size-4" />
             </button>
             <button
               onClick={onClearMemory}
-              className="flex h-8 items-center justify-center gap-1 rounded-[8px] border border-slate-200 bg-white px-2 text-xs font-bold text-slate-600"
+              className="flex h-8 items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white px-2 text-xs font-bold text-slate-600"
               title={labels.resetMemory}
             >
               <RotateCcw className="size-3.5" />
@@ -292,7 +292,7 @@ export function RightRail({
           </div>
         }
       >
-        <div className="mb-3 rounded-[8px] border border-slate-200 bg-slate-50 p-3">
+        <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
           <div className="flex items-start justify-between gap-2">
             <div>
               <p className="text-xs font-black uppercase text-slate-400">{labels.memoryStatusTitle}</p>
@@ -317,7 +317,7 @@ export function RightRail({
         ) : (
           <div className="space-y-2">
             {memory.preferences.map((preference) => (
-              <div key={preference.id} className="rounded-[8px] border border-slate-200 bg-white p-3">
+              <div key={preference.id} className="rounded-xl border border-slate-200 bg-white p-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="truncate text-sm font-black text-slate-950">
@@ -335,9 +335,9 @@ export function RightRail({
 
       <Panel title={labels.whyTitle} eyebrow={labels.explanationCards} icon={<HelpCircle className="size-4" />}>
         <div className="space-y-3">
-          <div className="rounded-[8px] border border-violet-100 bg-violet-50 p-3">
+          <div className="rounded-xl border border-violet-100 bg-violet-50 p-3">
             <div className="flex gap-3">
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-[8px] bg-violet-600 text-white">
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-violet-600 text-white">
                 <Shield className="size-5" />
               </div>
               <div>
@@ -349,7 +349,7 @@ export function RightRail({
             </div>
           </div>
 
-          <div className="rounded-[8px] border border-orange-100 bg-orange-50 p-3">
+          <div className="rounded-xl border border-orange-100 bg-orange-50 p-3">
             <p className="text-sm font-black text-orange-900">{labels.whatNextTitle}</p>
             <div className="mt-2 space-y-2">
               {labels.whatNextItems.map((item) => (
@@ -364,7 +364,7 @@ export function RightRail({
           {critiques.length > 0 ? (
             <div className="space-y-2">
               {critiques.slice(0, 3).map((critique) => (
-                <div key={critique.id} className="rounded-[8px] border border-slate-200 bg-white p-3 shadow-sm">
+                <div key={critique.id} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                   <div className="flex items-start justify-between gap-2">
                     <p className="text-sm font-black text-slate-950">{critique.issue}</p>
                     <ImpactBadge impact={critique.impact} labels={labels.impactLabels} />
@@ -383,7 +383,7 @@ export function RightRail({
         ) : (
           <div className="space-y-2">
             {warnings.slice(0, 4).map((warning) => (
-              <div key={warning.id} className="rounded-[8px] border border-slate-200 bg-white p-3">
+              <div key={warning.id} className="rounded-xl border border-slate-200 bg-white p-3">
                 <div className="flex items-start justify-between gap-2">
                   <p className="text-sm font-black text-slate-950">{warning.message}</p>
                   <ImpactBadge impact={warning.impact} labels={labels.impactLabels} />

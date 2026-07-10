@@ -1,6 +1,20 @@
 "use client";
 
-import { Bot, BrainCircuit, Database, MapPinned, Plus, Route, SearchCheck, ShieldAlert, ShieldCheck, Sparkles } from "lucide-react";
+import {
+  Bot,
+  BrainCircuit,
+  Database,
+  Gauge,
+  LayoutTemplate,
+  MapPinned,
+  Plus,
+  Route,
+  SearchCheck,
+  ShieldAlert,
+  ShieldCheck,
+  Sparkles,
+  WalletCards
+} from "lucide-react";
 import { languageNames, type Language, type UIText, type ViewMode } from "@/i18n";
 import type { AgentTrace } from "@/types/travel";
 
@@ -33,6 +47,10 @@ const iconForAgent: Record<AgentTrace["agent"], typeof Bot> = {
   "Input Consistency Agent": ShieldCheck,
   "Planner Agent": Route,
   "Constraint Checker Agent": MapPinned,
+  "Budget Manager Agent": WalletCards,
+  "Route Mobility Agent": MapPinned,
+  "Pace Feasibility Agent": Gauge,
+  "Presentation Agent": LayoutTemplate,
   "Memory Agent": Database
 };
 
@@ -68,7 +86,7 @@ export function TopBar({
   return (
     <header className="grid gap-3 lg:grid-cols-[minmax(260px,1fr)_auto_minmax(280px,1fr)] lg:items-center">
       <div className="flex min-w-0 items-center gap-3">
-        <div className="relative flex size-12 shrink-0 items-center justify-center rounded-[8px] bg-gradient-to-br from-indigo-600 to-violet-500 text-white shadow-[0_14px_34px_rgba(92,70,229,0.3)]">
+        <div className="relative flex size-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-600 to-violet-500 text-white shadow-[0_14px_34px_rgba(92,70,229,0.3)]">
           <BrainCircuit className="size-7" />
           <span className="absolute -right-1 -top-1 size-3 rounded-full bg-violet-300" />
         </div>

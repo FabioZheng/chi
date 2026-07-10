@@ -29,12 +29,12 @@ const sourceClasses: Record<PreferenceSource, string> = {
 export function Panel({ title, eyebrow, icon, actions, children, className = "" }: PanelProps) {
   return (
     <section
-      className={`rounded-[8px] border border-slate-200/80 bg-white/86 shadow-[0_18px_48px_rgba(26,35,67,0.08)] backdrop-blur ${className}`}
+      className={`rounded-xl border border-slate-200/80 bg-white/86 shadow-[0_10px_30px_rgba(26,35,67,0.06)] backdrop-blur ${className}`}
     >
       <div className="flex min-h-14 items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
         <div className="flex min-w-0 items-center gap-3">
           {icon ? (
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-[8px] border border-slate-200 bg-slate-50 text-slate-700">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-700">
               {icon}
             </div>
           ) : null}
@@ -68,7 +68,7 @@ export function SourceBadge({ source, labels }: { source: PreferenceSource; labe
 
 export function EmptyState({ title, body }: { title: string; body?: string }) {
   return (
-    <div className="rounded-[8px] border border-dashed border-slate-200 bg-slate-50/70 px-3 py-4 text-center">
+    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/70 px-3 py-4 text-center">
       <p className="text-sm font-semibold text-slate-700">{title}</p>
       {body ? <p className="mt-1 text-xs leading-5 text-slate-500">{body}</p> : null}
     </div>
@@ -77,7 +77,7 @@ export function EmptyState({ title, body }: { title: string; body?: string }) {
 
 export function IconPill({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
-    <span className={`inline-flex size-7 items-center justify-center rounded-[8px] border border-slate-200 bg-white text-slate-600 ${className}`}>
+    <span className={`inline-flex size-7 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 ${className}`}>
       {children}
     </span>
   );

@@ -55,44 +55,8 @@ Return JSON with:
             "isRoughEstimate": true
           }
         ],
-        "mapPlaces": [
-          {
-            "id": "place-anchor-activity",
-            "dayNumber": 1,
-            "title": "Anchor activity",
-            "location": "Relevant neighborhood",
-            "coordinates": { "lat": 41.9028, "lng": 12.4964 },
-            "locationStatus": "Approximate",
-            "sourceActivityId": "anchor-activity",
-            "unavailableReason": null
-          }
-        ],
-        "routeSegments": [
-          {
-            "id": "route-place-a-place-b",
-            "dayNumber": 1,
-            "fromPlaceId": "place-a",
-            "toPlaceId": "place-b",
-            "fromStopId": "place-a",
-            "toStopId": "place-b",
-            "fromCoordinates": null,
-            "toCoordinates": null,
-            "transportMode": "metro",
-            "estimatedTravelTimeMinutes": 20,
-            "durationSeconds": 1200,
-            "distanceKm": 4.5,
-            "distanceMeters": 4500,
-            "encodedPolyline": null,
-            "provider": "fallback_estimated",
-            "geometryStatus": "Estimated",
-            "confidence": 0.72,
-            "routeStatus": "Estimated",
-            "reason": "Metro is preferred because the active budget preference favors low-cost transport.",
-            "relatedPreference": "budget-friendly local transport",
-            "notes": "Brief movement note.",
-            "warnings": ["Exact route geometry must be verified by the routing provider."]
-          }
-        ],
+        "mapPlaces": [],
+        "routeSegments": [],
         "days": [
           {
             "dayNumber": 1,
@@ -130,7 +94,8 @@ Return JSON with:
                 "bookingRisk": "Medium",
                 "openingHoursRisk": "Low",
                 "preferenceFit": "Fits a confirmed preference",
-                "imageHint": "Relevant place image"
+                "imageHint": "Relevant place image",
+                "relatedPreferenceIds": ["learned-comfort-vs-remoteness"]
               }
             ],
             "alternatives": [
@@ -148,26 +113,27 @@ Return JSON with:
   }
 }
 
-Generate 2 itinerary options when feasible.
+If the request includes an "optionDirective", generate exactly 1 itinerary option that follows that directive; its title and positioning must reflect the directive. Otherwise generate 2 itinerary options when feasible.
+Each activity must include relatedPreferenceIds: an array of the learnedPreference ids (from the request) that directly shaped that activity. Use an empty array when no learned preference influenced it. Never invent ids.
 Each day should include 2 to 6 activities, alternatives, realistic pacing notes, estimated walking, estimated cost in EUR, transit time, booking risk, opening-hour risk, and preference fit.
-Each activity should include coordinates when reasonably knowable. Use approximate coordinates for well-known places or neighborhoods. If coordinates are not knowable, set coordinates to null and include locationUnavailableReason.
-Each option should include mapPlaces and routeSegments derived from the itinerary activities, not hard-coded examples. Route segments should connect the planned movement between places and include fromStopId, toStopId, transport mode, rough time, rough distance, confidence, routeStatus, reason, relatedPreference, burden-relevant notes, warnings, and dayNumber.
-Use routeStatus exactly as one of: "Real", "Estimated", "Missing". Use "Real" only when you are confident the segment reflects a realistic known route. Use "Estimated" for approximate coordinate-based or planner-estimated movement. Use "Missing" when a route should exist but coordinates or routing detail are unavailable.
-For route provider fields, use provider "fallback_estimated", geometryStatus "Estimated", encodedPolyline null, and routeStatus "Estimated" unless exact external routing geometry is already available. The server may later replace these with provider "google_routes", geometryStatus "Real", and an encodedPolyline from Google Routes API.
-Represent the itinerary as a continuous route. Include transport between stops within the same day. Include accommodation/base transitions when relevant: base to first stop, last stop back to base, and inter-day/base changes. If accommodation coordinates are unknown, include a base or area as an explicit estimated/assumed place and explain that in route notes.
-Assign dayNumber on every mapPlace that belongs to a specific day. For same-city itineraries, still include day-specific mapPlaces or activity coordinates for each day; do not omit day map data just because the traveler sleeps in the same city.
-Every routeSegment fromPlaceId and toPlaceId must exactly match an id from mapPlaces or an activity id in the same itinerary option. If a route endpoint is unknown, omit that route segment instead of returning an empty string.
+Each activity must include coordinates when reasonably knowable. Use approximate coordinates for well-known places or neighborhoods. If coordinates are not knowable, set coordinates to null and include locationUnavailableReason.
+Always set mapPlaces to [] and routeSegments to [] at every level. Do NOT generate route segments or map places: the Route Mobility Agent derives the route from your activities in visiting order and a routing provider verifies the geometry. Spend your output on activities, alternatives, accommodation, and costs instead.
+Order each day's activities in realistic visiting order, since the route is derived from that order.
+Keep every description, fitSummary, pacingNote, and basis under 20 words.
 Each option should include costBreakdown with accommodation, transport, food, attractions, localTransit, optionalActivities, and other when relevant. Include per-day and total estimates where possible.
 Each day should include costBreakdown where possible and accommodation describing where the traveler sleeps that night and whether it changes from the previous night.
 Use the reviewed transportAssumptions, accommodationAssumptions, and costAssumptions from the request when they are present unless a confirmed preference contradicts them.
 Use learnedPreferences and probeAnswers as primary planning guidance. Treat learnedPreferences as the user's active hidden-preference profile; preferences omitted from the request should not influence the plan.
+The prompt may have been refined after the preferences were learned. Treat any concrete constraint in the prompt (destination, dates, budget cap, must-include or must-avoid items, party size) as a hard requirement layered on top of the learned preferences. When the prompt names a different destination or timeframe than a retained assumption implies, follow the prompt and silently drop the stale assumption rather than mixing locations.
+Preferences whose planningImpact is marked "LATEST INSTRUCTION" are the traveler's newest explicit request: they take ABSOLUTE precedence over every other learned preference or assumption they conflict with, and the plan must visibly change to satisfy them.
+If the prompt contains a "Refinement request" line, that line is the traveler's latest instruction and OVERRIDES any learned preference or assumption it conflicts with. For example, "prioritise less touristy places" must actually change activity selection toward local, off-the-beaten-path spots and away from headline tourist sights, even if an earlier learned preference favored major sights. Keep the established destinations and trip length unless the refinement explicitly changes them, but genuinely change the affected activities, pacing, or budget so the new plan visibly differs from the previous one.
 Each itinerary option must include preferenceInfluences explaining which learned preferences shaped routing, pacing, accommodation, activities, and cost choices.
 Use exactly these enum values for risk fields: "Low", "Medium", "High".
 Write all user-facing text in the requested outputLanguage. Keep JSON field names, enum values, ids, and category values in English exactly as specified.
 Do not claim real-time availability. When exact opening hours or tickets matter, encode risk through bookingRisk and openingHoursRisk.
 `;
 
-export async function runPlannerAgent(input: PlanRequest) {
+export async function runPlannerAgent(input: PlanRequest, optionDirective?: string) {
   return callJsonAgent({
     agentName: "Planner Agent",
     schema: PlannerAgentOutputSchema,
@@ -175,6 +141,7 @@ export async function runPlannerAgent(input: PlanRequest) {
     user: JSON.stringify(
       {
         ...input,
+        ...(optionDirective ? { optionDirective } : {}),
         outputLanguage: input.language === "zh" ? "Simplified Chinese (zh-CN)" : "English"
       },
       null,

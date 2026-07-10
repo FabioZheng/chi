@@ -8,13 +8,14 @@ import type { AgentTrace, MemoryStatus, UserMemory } from "@/types/travel";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function trace(agent: AgentTrace["agent"], summary: string, count: number): AgentTrace {
+function trace(agent: AgentTrace["agent"], summary: string, count: number, durationMs?: number): AgentTrace {
   return {
     agent,
     summary,
     status: "Complete",
     count,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    ...(durationMs !== undefined ? { durationMs } : {})
   };
 }
 
@@ -53,25 +54,35 @@ function errorResponse(error: unknown) {
 export async function POST(request: Request) {
   try {
     const body = PreferenceProbeRequestSchema.parse(await request.json());
+    const probeStartedAt = Date.now();
     const probe = await runPreferenceProbeAgent(body);
+    const probeDurationMs = Date.now() - probeStartedAt;
+    const criticStartedAt = Date.now();
     const critic = await runAssumptionCriticAgent({
       prompt: body.prompt,
       assumptions: probe.assumptions,
       missingPreferences: [],
       language: body.language
     });
+    const criticDurationMs = Date.now() - criticStartedAt;
 
     const response = PreferenceProbeResponseSchema.parse({
-      learnedPreferences: probe.learnedPreferences,
-      assumptions: probe.assumptions,
+      learnedPreferences: probe.learnedPreferences.map((preference) => ({
+        ...preference,
+        sourceAgent: "Preference Probe Agent" as const
+      })),
+      assumptions: probe.assumptions.map((assumption) => ({
+        ...assumption,
+        sourceAgent: "Preference Probe Agent" as const
+      })),
       transportAssumptions: probe.transportAssumptions,
       accommodationAssumptions: probe.accommodationAssumptions,
       costAssumptions: probe.costAssumptions,
       critiques: critic.critiques,
       memoryStatus: memoryStatus(body.memory, probe.memoryDerivedPreferenceIds.length, body.language),
       trace: [
-        trace("Preference Probe Agent", probe.summary, probe.learnedPreferences.length),
-        trace("Assumption Critic Agent", critic.summary, critic.critiques.length)
+        trace("Preference Probe Agent", probe.summary, probe.learnedPreferences.length, probeDurationMs),
+        trace("Assumption Critic Agent", critic.summary, critic.critiques.length, criticDurationMs)
       ]
     });
 

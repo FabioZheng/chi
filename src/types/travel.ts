@@ -1,6 +1,7 @@
 import type { z } from "zod";
 import type {
   ActivitySchema,
+  AgentNameSchema,
   AgentTraceSchema,
   AlternativeOptionSchema,
   AnalyzeRequestSchema,
@@ -15,6 +16,7 @@ import type {
   ConstraintWarningSchema,
   CostAssumptionSchema,
   CostBreakdownItemSchema,
+  DayDigestSchema,
   DetectedConflictSchema,
   ItineraryDaySchema,
   ItineraryOptionSchema,
@@ -26,8 +28,11 @@ import type {
   MemoryStatusSchema,
   MemoryPreferenceSchema,
   MissingPreferenceSchema,
+  PaceRatingSchema,
+  PlanDigestSchema,
   PlanRequestSchema,
   PlanResponseSchema,
+  PreferenceControlSchema,
   PreferenceInfluenceSchema,
   PreferenceProbeAnswerSchema,
   PreferenceProbeRequestSchema,
@@ -38,6 +43,7 @@ import type {
 } from "@/schemas/travel";
 
 export type Activity = z.infer<typeof ActivitySchema>;
+export type AgentName = z.infer<typeof AgentNameSchema>;
 export type AgentTrace = z.infer<typeof AgentTraceSchema>;
 export type AgentTraceStep = AgentTrace;
 export type AlternativeOption = z.infer<typeof AlternativeOptionSchema>;
@@ -54,6 +60,7 @@ export type ConflictProbeOption = z.infer<typeof ConflictProbeOptionSchema>;
 export type ConstraintWarning = z.infer<typeof ConstraintWarningSchema>;
 export type CostAssumption = z.infer<typeof CostAssumptionSchema>;
 export type CostBreakdownItem = z.infer<typeof CostBreakdownItemSchema>;
+export type DayDigest = z.infer<typeof DayDigestSchema>;
 export type DetectedConflict = z.infer<typeof DetectedConflictSchema>;
 export type Itinerary = z.infer<typeof ItinerarySchema>;
 export type ItineraryDay = z.infer<typeof ItineraryDaySchema>;
@@ -65,8 +72,11 @@ export type MapPlace = z.infer<typeof MapPlaceSchema>;
 export type MemoryStatus = z.infer<typeof MemoryStatusSchema>;
 export type MemoryPreference = z.infer<typeof MemoryPreferenceSchema>;
 export type MissingPreference = z.infer<typeof MissingPreferenceSchema>;
+export type PaceRating = z.infer<typeof PaceRatingSchema>;
+export type PlanDigest = z.infer<typeof PlanDigestSchema>;
 export type PlanRequest = z.infer<typeof PlanRequestSchema>;
 export type PlanResponse = z.infer<typeof PlanResponseSchema>;
+export type PreferenceControl = z.infer<typeof PreferenceControlSchema>;
 export type PreferenceInfluence = z.infer<typeof PreferenceInfluenceSchema>;
 export type PreferenceProbeAnswer = z.infer<typeof PreferenceProbeAnswerSchema>;
 export type PreferenceProbeRequest = z.infer<typeof PreferenceProbeRequestSchema>;

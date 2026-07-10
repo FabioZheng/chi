@@ -41,6 +41,8 @@ Return JSON with:
 }
 
 Use the detected conflicts and the user's selected probe answers.
+When a probe answer has skipped=true, the user declined to state a preference for that conflict: do NOT invent a learned preference for it, and do not create assumptions that presume a choice on that trade-off.
+When a probe answer includes non-empty customAnswer text, treat it as the user's own words with higher signal than the selected option label, and reflect its specifics in the learned preference value and planning impact.
 Learned preferences should be deeper than category labels. They should describe the user's chosen trade-off and how planning should respond.
 Assumptions should be concise downstream consequences that can be kept, edited, or excluded before planning.
 Make the rationale for each assumption traceable to a learned preference or selected probe answer whenever possible.
