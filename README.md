@@ -1,10 +1,14 @@
-# Assumption-Aware Agent Planner
+# TripTree
 
-A Next.js + TypeScript research prototype for ambiguity-first travel planning. The app is designed for short, casual prompts such as "Italy for one week", "somewhere warm", or "cheap trip to Europe". Instead of starting with a static preference form, it detects hidden planning trade-offs, asks lightweight checkpoint questions, learns a controllable preference profile, reviews assumptions, validates input consistency, then generates a map-based itinerary.
+TripTree is a Next.js + TypeScript research prototype for checkpoint-based, branch-visible, interruptible travel planning.
 
-For full operating instructions, workflow details, and agent explanations, see [docs/USER_GUIDE.md](docs/USER_GUIDE.md). For a scientific paper-style explanation of the research workflow and innovation points, see [docs/SCIENTIFIC_DOCUMENTATION.md](docs/SCIENTIFIC_DOCUMENTATION.md). For the earlier abstract document, see `docs/hidden_preference_elicitation_project_abstract.docx`.
+Instead of generating a full itinerary in one opaque step, TripTree reveals one complete candidate batch at each structural decision. The traveler can compare route directions, pacing strategies, trip styles, and logistical approaches; mark or prune branches; pause generation; add a newly realized trip rule; and continue from browser-local planning state without restarting from the initial prompt.
+
+For operating instructions, see [docs/USER_GUIDE.md](docs/USER_GUIDE.md). For the research framing and system model, see [docs/SCIENTIFIC_DOCUMENTATION.md](docs/SCIENTIFIC_DOCUMENTATION.md). For production setup, see [docs/VERCEL_DEPLOYMENT.md](docs/VERCEL_DEPLOYMENT.md).
 
 ## Setup
+
+Requirements: Node.js 24.x and pnpm 11.7.0.
 
 ```bash
 pnpm install
@@ -13,110 +17,103 @@ pnpm dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-## `.env` Instructions
+## Configuration
 
-Copy `.env.example` to `.env`, then fill in the keys you need. `.env` is the single local configuration file for this prototype and is ignored by git.
-
-Configure `.env` with OpenRouter:
+Create `.env` from `.env.example` and configure OpenRouter:
 
 ```bash
 LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=your_openrouter_key
 OPENROUTER_MODEL=openai/gpt-4.1-mini
 OPENROUTER_SITE_URL=http://localhost:3000
-OPENROUTER_APP_NAME=Assumption-Aware Agent Planner
+OPENROUTER_APP_NAME=TripTree
 ```
 
-OpenAI remains available only if you explicitly set `LLM_PROVIDER=openai` and provide an `OPENAI_API_KEY`.
+OpenAI is also supported when `LLM_PROVIDER=openai` and `OPENAI_API_KEY` are set. API routes call real providers; missing configuration surfaces as an error while preserving the current tree.
 
-The API routes intentionally call real LLM providers. There is no silent mock fallback; missing keys surface as route errors in the UI.
-
-### Optional Google Maps Routing
-
-For verified map routing, paste a temporary Google Maps Platform key into `.env`:
+### Optional Google Routing
 
 ```bash
 GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
 ```
 
-The server uses Google Geocoding API and Routes API when this key is present. Keep the key server-side; the app does not need a `NEXT_PUBLIC_` Google key for routing. If routing fails or coordinates are uncertain, the map shows dashed estimated segments instead of solid real routes. Do not commit `.env`; it is ignored by git.
+The key remains server-side. When routing is unavailable, the planner falls back to estimated route data.
 
-## Deploying On Vercel
+## Product Model
 
-Vercel can deploy this repository as a standard Next.js app. The included `vercel.json` keeps the install/build commands explicit:
+The active branch sequence is:
+
+1. **Route**: city combinations, geographic direction, and overall route shape.
+2. **Pace**: night allocation, recovery time, and activity density.
+3. **Trip style**: the experiences and register that anchor the trip.
+4. **Logistics**: hotel changes, transfer strategy, and hub versus point-to-point movement.
+5. **Itinerary**: a detailed plan generated only after the branch path is committed.
+
+Each completed expansion creates a decision checkpoint. Candidate siblings remain visible after a branch is committed. The traveler can reopen an earlier checkpoint, restore a pruned branch, or apply a new trip rule such as “Include Bologna,” “slower pace,” or “fewer hotel changes.” The client heuristically selects an affected stage, computes score changes for the current tree, prunes clearly incompatible or downstream work, and requests a fresh candidate batch from that point.
+
+Manual Pause aborts the active browser request, propagates cancellation through the server where possible, and snapshots the completed tree and trip rules. Resume starts a fresh request from that logical state. Final itinerary generation is interruptible too, although a provider may still finish work that it has already accepted.
+
+## Branch Annotations
+
+The branch inspector presents deterministic evaluator annotations rather than separate agent trees or four independent branch-time agent calls:
+
+- route fit
+- budget risk
+- logistics difficulty
+- pace load
+- implicit assumptions
+- the main trade-off
+
+The Branch Explorer Agent proposes structurally distinct candidates and implicit assumptions. Deterministic scoring then derives the displayed fit, budget, logistics, pace, and trade-off labels from branch data and active trip rules.
+
+## Project Structure
+
+- `src/app/page.tsx`: workspace orchestration, checkpoint snapshots, pause/resume, steering, repair, and persistence.
+- `src/components/BranchExplorer.tsx`: shared tree, branch controls, scoring annotations, and selected-branch inspector.
+- `src/components/TripItinerary.tsx`: compact post-commit itinerary view.
+- `src/app/api/expand/route.ts`: branch expansion endpoint.
+- `src/app/api/plan/route.ts`: final itinerary generation and feasibility analysis.
+- `src/agents/branchExplorerAgent.ts`: branch proposal prompt and provider call.
+- `src/agents/branchScoring.ts`: deterministic transfer, budget, and pace estimates.
+- `src/schemas/travel.ts`: Zod request and response contracts.
+- `src/types/travel.ts`: TypeScript types inferred from Zod.
+
+The older analyze/probe routes remain in the repository for study compatibility, but they are no longer part of the default user interface.
+
+## Validation
+
+```bash
+pnpm typecheck
+pnpm build
+```
+
+All LLM outputs are parsed through Zod. Invalid provider output fails the relevant request instead of being treated as trusted planning state.
+
+## Deployment
+
+The included `vercel.json` enables Fluid Compute and API request cancellation, and uses:
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm build
 ```
 
-Set these environment variables in Vercel Project Settings:
-
-```bash
-LLM_PROVIDER=openrouter
-OPENROUTER_API_KEY=your_openrouter_key
-OPENROUTER_MODEL=openai/gpt-4.1-mini
-OPENROUTER_SITE_URL=https://your-vercel-domain.vercel.app
-OPENROUTER_APP_NAME=Assumption-Aware Agent Planner
-GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
-```
-
-Do not commit `.env`; use `.env.example` as the safe template.
-
-Recommended Vercel settings:
-
-- Framework preset: Next.js
-- Install command: `pnpm install --frozen-lockfile`
-- Build command: `pnpm build`
-- Output directory: leave empty/default for Next.js
-- Node.js version: 20 or newer
-
-## Project Overview
-
-- `src/app/page.tsx`: dashboard flow and client state.
-- `src/app/api/analyze/route.ts`: runs hidden-preference conflict detection and checkpoint analysis.
-- `src/app/api/probe/route.ts`: converts checkpoint answers into learned preferences and structured assumptions.
-- `src/app/api/plan/route.ts`: runs input consistency validation, itinerary generation, and feasibility checking.
-- `src/agents/`: provider calls, prompts, and localStorage memory helpers.
-- `src/schemas/`: Zod schemas for every agent request and output.
-- `src/types/`: shared TypeScript types inferred from Zod.
-- `src/components/`: three-column dashboard UI.
-
-## Agents
-
-- Conflict Detector Agent: identifies latent conflicts, hidden preferences, checkpoint need, checkpoint stage, assumption risk, expected plan impact, and interaction cost.
-- Preference Probe Agent: turns answered checkpoint options into learned preferences, transport assumptions, accommodation assumptions, and cost assumptions.
-- Assumption Critic Agent: flags risky assumptions and explains why they matter before final planning.
-- Input Consistency Agent: blocks incoherent planning input, such as a Europe trip with Tokyo marked as a required city.
-- Planner Agent: generates itinerary options, map places, route segments, cost breakdowns, accommodation details, and preference influence explanations.
-- Constraint Checker Agent: checks walking load, travel time, budget mismatch, booking risks, opening-hour risks, and pacing issues.
-- Memory Agent: stores confirmed preferences in `localStorage` and reuses them across prompts unless the user starts a new session.
-
-## Current Workflow
-
-1. The user enters a short travel idea.
-2. The backend detects hidden trade-offs and decides whether a checkpoint is needed.
-3. The UI asks targeted preference probes instead of showing a full static form.
-4. The learned preference profile can be edited, locked, ignored, or reprioritized.
-5. Assumptions about transport, accommodation, and cost are reviewed before planning.
-6. Input consistency is checked before itinerary generation.
-7. The planner returns structured itinerary options with map places, route lines, costs, and preference influences.
-8. The feasibility checker flags risks and warnings.
-
-## Validation
-
-All LLM outputs are requested as JSON objects and parsed through Zod before the UI receives them. Invalid JSON or schema mismatches fail the route instead of being displayed as trusted planning data. The `/api/plan` route also runs an input consistency gate before calling the itinerary planner.
+Use Node.js 24.x with pnpm 11.7.0, and configure provider secrets in Vercel Project Settings. See [docs/VERCEL_DEPLOYMENT.md](docs/VERCEL_DEPLOYMENT.md) for the complete checklist, function-duration notes, and environment-variable matrix.
 
 ## Limitations
 
-- Opening hours, prices, ticket inventory, and transit conditions are not live-verified.
-- localStorage memory is browser-local and not shared across devices.
-- Provider JSON mode improves structure but does not guarantee factual correctness.
-- The prototype does not include authentication, persistence beyond localStorage, or collaborative planning.
+- Branch expansion is batch-visible: placeholders are shown during a request, then the complete candidate batch appears. Nodes are not streamed progressively.
+- Cancellation signals are propagated from the browser through server-side provider and routing calls, but cancellation remains best effort once an upstream service has accepted work.
+- A checkpoint snapshot stores the tree, trip rules, active decision, label, and timestamp. It does not independently restore favorites, selection, score deltas, warnings, or a generated itinerary.
+- Favor is a visual marker only; it does not change scoring or generation. **Continue here** is the commitment action.
+- Branch evaluator names describe deterministic annotation roles; they are not independent specialist agents invoked for every candidate branch.
+- Prices, schedules, opening hours, and inventory are not live-verified.
+- Checkpoints are stored in browser `localStorage` and are not shared across devices.
+- The prototype does not yet include authentication or multi-user collaboration.
 
 ## Future Work
 
-- Add live place, ticketing, and transit APIs for stronger feasibility checks.
-- Add streaming agent progress while preserving concise trace summaries.
-- Add preference conflict resolution when memory disagrees with the current prompt.
-- Add exportable itineraries and shareable planning sessions.
+- Stream candidate nodes progressively as agents produce them.
+- Add server-side cancellation and durable cross-device checkpoint storage.
+- Add live rail, lodging, price, and ticket availability sources.
+- Add automated coverage for pause/resume, sibling switching, repair, and persistence.

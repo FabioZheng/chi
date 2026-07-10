@@ -53,7 +53,7 @@ Write all user-facing text in the requested outputLanguage. Keep JSON field name
 Do not generate an itinerary.
 `;
 
-export async function runPreferenceProbeAgent(input: PreferenceProbeRequest) {
+export async function runPreferenceProbeAgent(input: PreferenceProbeRequest, signal?: AbortSignal) {
   return callJsonAgent({
     agentName: "Preference Probe Agent",
     schema: PreferenceProbeAgentOutputSchema,
@@ -66,6 +66,7 @@ export async function runPreferenceProbeAgent(input: PreferenceProbeRequest) {
       null,
       2
     ),
-    temperature: 0.2
+    temperature: 0.2,
+    signal
   });
 }

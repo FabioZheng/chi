@@ -9,6 +9,11 @@ import type {
   AccommodationAssumptionSchema,
   AssumptionCritiqueSchema,
   AssumptionSchema,
+  BranchCandidateSchema,
+  BranchCitySchema,
+  BranchDimensionSchema,
+  BranchEstimatesSchema,
+  BranchExplorerOutputSchema,
   CheckpointDecisionSchema,
   ConfirmedPreferenceSchema,
   ConflictDetectorOutputSchema,
@@ -18,6 +23,8 @@ import type {
   CostBreakdownItemSchema,
   DayDigestSchema,
   DetectedConflictSchema,
+  ExpandRequestSchema,
+  ExpandResponseSchema,
   ItineraryDaySchema,
   ItineraryOptionSchema,
   ItinerarySchema,
@@ -30,8 +37,10 @@ import type {
   MissingPreferenceSchema,
   PaceRatingSchema,
   PlanDigestSchema,
+  PlanNodeSchema,
   PlanRequestSchema,
   PlanResponseSchema,
+  PlanSkeletonSchema,
   PreferenceControlSchema,
   PreferenceInfluenceSchema,
   PreferenceProbeAnswerSchema,
@@ -52,6 +61,11 @@ export type AnalyzeResponse = z.infer<typeof AnalyzeResponseSchema>;
 export type AccommodationAssumption = z.infer<typeof AccommodationAssumptionSchema>;
 export type Assumption = z.infer<typeof AssumptionSchema>;
 export type AssumptionCritique = z.infer<typeof AssumptionCritiqueSchema>;
+export type BranchCandidate = z.infer<typeof BranchCandidateSchema>;
+export type BranchCity = z.infer<typeof BranchCitySchema>;
+export type BranchDimension = z.infer<typeof BranchDimensionSchema>;
+export type BranchEstimates = z.infer<typeof BranchEstimatesSchema>;
+export type BranchExplorerOutput = z.infer<typeof BranchExplorerOutputSchema>;
 export type RiskyAssumption = AssumptionCritique;
 export type CheckpointDecision = z.infer<typeof CheckpointDecisionSchema>;
 export type ConfirmedPreference = z.infer<typeof ConfirmedPreferenceSchema>;
@@ -62,6 +76,8 @@ export type CostAssumption = z.infer<typeof CostAssumptionSchema>;
 export type CostBreakdownItem = z.infer<typeof CostBreakdownItemSchema>;
 export type DayDigest = z.infer<typeof DayDigestSchema>;
 export type DetectedConflict = z.infer<typeof DetectedConflictSchema>;
+export type ExpandRequest = z.infer<typeof ExpandRequestSchema>;
+export type ExpandResponse = z.infer<typeof ExpandResponseSchema>;
 export type Itinerary = z.infer<typeof ItinerarySchema>;
 export type ItineraryDay = z.infer<typeof ItineraryDaySchema>;
 export type ItineraryOption = z.infer<typeof ItineraryOptionSchema>;
@@ -74,7 +90,9 @@ export type MemoryPreference = z.infer<typeof MemoryPreferenceSchema>;
 export type MissingPreference = z.infer<typeof MissingPreferenceSchema>;
 export type PaceRating = z.infer<typeof PaceRatingSchema>;
 export type PlanDigest = z.infer<typeof PlanDigestSchema>;
+export type PlanNode = z.infer<typeof PlanNodeSchema>;
 export type PlanRequest = z.infer<typeof PlanRequestSchema>;
+export type PlanSkeleton = z.infer<typeof PlanSkeletonSchema>;
 export type PlanResponse = z.infer<typeof PlanResponseSchema>;
 export type PreferenceControl = z.infer<typeof PreferenceControlSchema>;
 export type PreferenceInfluence = z.infer<typeof PreferenceInfluenceSchema>;

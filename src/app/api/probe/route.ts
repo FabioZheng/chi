@@ -2,11 +2,13 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { runAssumptionCriticAgent, runPreferenceProbeAgent } from "@/agents";
 import { AgentError } from "@/agents/llm";
+import { guardApiRequest } from "@/app/api/requestGuard";
 import { PreferenceProbeRequestSchema, PreferenceProbeResponseSchema } from "@/schemas/travel";
 import type { AgentTrace, MemoryStatus, UserMemory } from "@/types/travel";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 240;
 
 function trace(agent: AgentTrace["agent"], summary: string, count: number, durationMs?: number): AgentTrace {
   return {
@@ -41,29 +43,37 @@ function memoryStatus(memory: UserMemory | null, appliedPreferenceCount: number,
 function errorResponse(error: unknown) {
   if (error instanceof AgentError) {
     const status = error.code === "CONFIG" ? 500 : 502;
-    return NextResponse.json({ error: error.message, code: error.code }, { status });
+    console.error(`[probe:${error.code}]`, error.message);
+    const message = error.code === "CONFIG" ? error.message : "The preference provider could not complete this request.";
+    return NextResponse.json({ error: message, code: error.code }, { status });
   }
 
   if (error instanceof z.ZodError) {
-    return NextResponse.json({ error: error.message, code: "VALIDATION" }, { status: 400 });
+    return NextResponse.json({ error: "Preference request validation failed.", code: "VALIDATION" }, { status: 400 });
   }
 
   return NextResponse.json({ error: "Unexpected preference probe failure.", code: "UNKNOWN" }, { status: 500 });
 }
 
 export async function POST(request: Request) {
+  const blocked = guardApiRequest(request, "probe", 10);
+  if (blocked) return blocked;
+
   try {
     const body = PreferenceProbeRequestSchema.parse(await request.json());
     const probeStartedAt = Date.now();
-    const probe = await runPreferenceProbeAgent(body);
+    const probe = await runPreferenceProbeAgent(body, request.signal);
     const probeDurationMs = Date.now() - probeStartedAt;
     const criticStartedAt = Date.now();
-    const critic = await runAssumptionCriticAgent({
-      prompt: body.prompt,
-      assumptions: probe.assumptions,
-      missingPreferences: [],
-      language: body.language
-    });
+    const critic = await runAssumptionCriticAgent(
+      {
+        prompt: body.prompt,
+        assumptions: probe.assumptions,
+        missingPreferences: [],
+        language: body.language
+      },
+      request.signal
+    );
     const criticDurationMs = Date.now() - criticStartedAt;
 
     const response = PreferenceProbeResponseSchema.parse({

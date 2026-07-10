@@ -1,438 +1,127 @@
-# Assumption-Aware Agent Planner User Guide
+# TripTree User Guide
 
-This guide explains how to run and use the Assumption-Aware Agent Planner, how assumptions are inferred, and how each backend agent contributes to the workflow.
+TripTree lets you steer a trip while it is being planned. The main workspace is one shared planning tree, not a sequence of hidden-preference forms and not a separate tree for every agent.
 
-## 1. What This Prototype Does
+## Run The App
 
-The planner is a travel-planning interface designed to avoid one common failure mode of AI travel agents: silently making hidden assumptions.
-
-Instead of immediately producing an itinerary, the app follows this sequence:
-
-1. You enter a short travel prompt.
-2. The Preference Agent identifies explicit, inferred, missing, and memory-derived preferences.
-3. The Assumption Critic Agent flags risky assumptions and missing details.
-4. You confirm, edit, reject, or answer preferences.
-5. The Planner Agent generates itinerary options from confirmed preferences.
-6. The Constraint Checker Agent reviews feasibility.
-7. The Memory Agent can save confirmed preferences in browser `localStorage`.
-
-The UI is a visualization layer for real backend LLM calls. It does not use static sample itinerary content.
-
-## 2. Setup And Run
-
-Install dependencies:
+Install Node.js 24.x and pnpm 11.7.0, then run:
 
 ```bash
 pnpm install
-```
-
-Create `.env` and configure OpenRouter.
-
-```env
-LLM_PROVIDER=openrouter
-OPENROUTER_API_KEY=your_key_here
-OPENROUTER_MODEL=openai/gpt-4.1-mini
-```
-
-OpenAI remains available only if you explicitly set `LLM_PROVIDER=openai` and provide an `OPENAI_API_KEY`.
-
-Run the app:
-
-```bash
 pnpm dev
 ```
 
-Open:
+Open `http://127.0.0.1:3000`.
 
-```text
-http://127.0.0.1:3000
-```
-
-If the page loads but agent calls fail, check that `.env` contains `OPENROUTER_API_KEY` and `LLM_PROVIDER=openrouter`.
-
-### Vercel Deployment
-
-Deploy the repository as a Next.js project on Vercel. The project includes `vercel.json` with:
-
-```bash
-pnpm install --frozen-lockfile
-pnpm build
-```
-
-Set these Vercel environment variables:
+The project uses real provider calls. Configure `.env` before starting:
 
 ```env
 LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=your_key_here
 OPENROUTER_MODEL=openai/gpt-4.1-mini
-OPENROUTER_SITE_URL=https://your-vercel-domain.vercel.app
-OPENROUTER_APP_NAME=Assumption-Aware Agent Planner
 ```
 
-Keep local secrets in `.env`; commit only `.env.example`.
+For a hosted deployment, follow [VERCEL_DEPLOYMENT.md](VERCEL_DEPLOYMENT.md).
 
-## 3. Main Interface
+## Start A Trip
 
-### Top Bar
-
-The top bar contains:
-
-- App title and subtitle.
-- View switcher:
-  - `Plan View`: full three-column dashboard.
-  - `Assumptions`: focuses on assumptions, missing preferences, and backend process state.
-  - `Canvas View`: focuses on the itinerary canvas and backend process state.
-- Language selector:
-  - `English`
-  - `中文`
-- Agent icons generated from the active backend workflow.
-
-Changing the language updates the interface text and sends the selected language to backend agents. When `中文` is selected, agents are instructed to return user-facing text in Simplified Chinese while keeping JSON keys and enum values stable.
-
-### Bottom Prompt Bar
-
-Use the bottom prompt bar to enter travel prompts such as:
+Enter a rough idea such as:
 
 ```text
-Plan a 4-day food and history trip to Kyoto.
+Italy for one week in October
 ```
 
-Buttons:
+Choose **Start branching**. TripTree shows placeholders while it generates, then reveals the complete route-candidate batch in the shared tree. Candidates are visible stage by stage, not streamed one node at a time. A short prompt is enough because uncertainty is handled through visible alternatives rather than a questionnaire.
 
-- `Analyze`: runs the Preference Agent and Assumption Critic Agent.
-- `Generate`: runs the Planner Agent and Constraint Checker Agent after preferences are available.
+## Read The Tree
 
-The chips beside the prompt summarize current backend state:
+The tree develops through four decisions:
 
-- number of inferred assumptions
-- number of missing preferences
-- number of high-impact unresolved items
-- number of memory-derived preferences applied
+1. **Route** compares city combinations and geographic directions.
+2. **Pace** compares night allocation and recovery strategies.
+3. **Trip style** compares the experiences that anchor the trip.
+4. **Logistics** compares hotel changes and transfer strategies.
 
-## 4. Recommended Workflow
+The dark node at the left is the original trip idea. Each following column is a planning decision. Committed nodes stay green, candidates remain available, favored nodes carry a star, and pruned nodes remain collapsed in the tree so the history is not lost.
 
-1. Enter a short travel prompt.
-2. Click `Analyze`.
-3. Review inferred assumptions in the left column.
-4. Review missing preferences and answer important gaps.
-5. Use the checkpoint card to resolve the highest-impact unresolved item.
-6. Confirm assumptions you agree with.
-7. Edit incorrect assumptions directly in the assumption rows.
-8. Reject assumptions that should not be used.
-9. Click `Generate`.
-10. Review itinerary options in the canvas.
-11. Review feasibility warnings.
-12. Save confirmed preferences to memory if you want future prompts to reuse them.
+Select any node to open its inspector. Four deterministic evaluator labels summarize the branch; they do not represent four independent agents running when the branch appears. The inspector shows:
 
-## 5. How Assumptions Are Inferred
+- Route fit from confidence and active-rule compatibility.
+- Budget risk from a heuristic daily budget reference.
+- Logistics difficulty from transfer time and hotel changes.
+- Pace load from city count, moves, and stay length.
+- The branch’s implicit assumptions.
+- The main trade-off created by choosing it.
 
-The Preference Agent receives:
+The Branch Explorer Agent proposes candidate structures and their implicit assumptions. The other branch labels are reproducible calculations over that structured data.
 
-- the user prompt
-- saved local memory, if any
-- a list of required preference categories
-- a strict JSON output schema
-- the selected UI language
+## Control A Branch
 
-It separates preference information into several classes.
+- **Favor** adds a visual star only. It does not alter scoring, ranking, or later generation.
+- **Prune** rejects a branch and its affected descendants.
+- **Restore** returns a pruned branch to candidate status.
+- **Continue here** commits that path and expands the next decision.
 
-### Explicit Preferences
+Candidate siblings remain visible after you continue. Choosing a different earlier sibling rewires the committed path and prevents conflicting branches from remaining committed at the same time.
 
-These are directly stated by the user.
+## Checkpoints
 
-Example prompt:
+Generation pauses automatically after each of the four stage batches is ready. That visible decision boundary is a checkpoint; the current prototype does not dynamically decide whether a particular batch is high impact.
+
+The progress bar shows how many of the four structural decisions are committed. The history button in the header lists recent checkpoints. Selecting one restores its tree, trip rules, and active decision. A checkpoint does not separately restore favorites, the selected card, score deltas, warnings, or a generated itinerary.
+
+There are no standalone **Hidden-Preference Checkpoints**, **Checkpoint Questions**, or **What we learned about you** screens. Preference information appears only as explicit trip rules and branch choices in the planning workspace.
+
+## Pause And Resume
+
+Choose **Pause** while branches or the final itinerary are being generated. TripTree preserves the last completed tree and stores a checkpoint snapshot. Because candidates arrive as a batch, a partial in-flight batch is not saved.
+
+Choose **Resume** to start a fresh request from that logical state. Earlier committed decisions are supplied as context rather than regenerated, but an interrupted in-flight stage or itinerary request starts again.
+
+The cancellation signal is propagated from the browser through TripTree’s server-side provider and routing calls. Cancellation is still best effort: an upstream service may finish work that it has already accepted.
+
+## Steer From A Checkpoint
+
+Use **Steer from here** when you realize something new, for example:
 
 ```text
-Plan a relaxed 3-day trip to Lisbon with local food.
+Must include Bologna
+Slower pace
+Fewer hotel changes
+Avoid the most expensive cities
 ```
 
-Explicit preferences may include:
+Applying a rule:
 
-- destination: Lisbon
-- duration: 3 days
-- pace: relaxed
-- food interest: local food
+1. Adds it to the editable **Trip rules** strip.
+2. Heuristically selects the earliest affected decision.
+3. Keeps unaffected earlier work.
+4. Computes old and new heuristic scores for the current tree.
+5. Prunes clearly incompatible candidates and later dependent work.
+6. Requests a fresh candidate batch from that stage.
 
-### Inferred Preferences
+Score changes may remain visible on preserved branch cards; newly generated replacements receive their own scores. This is stage-local regeneration, not an in-place patch of every old branch. Remove a rule from the strip to reconsider the affected part of the tree without it.
 
-These are likely preferences derived from the prompt, but not directly guaranteed.
+## Build The Itinerary
 
-Example:
+After Route, Pace, Trip style, and Logistics are committed, choose **Build itinerary**.
 
-```text
-Plan a honeymoon in Paris.
-```
+The itinerary view contains:
 
-Possible inferred preferences:
+- route overview
+- total days, estimated cost, walking, and travel time
+- a compact day-by-day timeline
+- category cost estimates
+- feasibility warnings
 
-- romantic pacing
-- scenic dining
-- central accommodation
-- higher comfort expectations
+Choose **Adjust at checkpoint** to return to the tree. Add a rule or restore an earlier checkpoint, then rebuild from the repaired branch.
 
-The UI marks these as inferred or needs-check depending on risk.
+## Persistence And Reset
 
-### Missing Preferences
+The active workspace, including the tree, trip rules, favorites, checkpoint history, and final itinerary, is stored in browser `localStorage`. Reloading restores the latest stable workspace state. A run that was active during reload is restored as paused. Storage is local to that browser and origin; it is not synchronized across devices.
 
-These are important details that the prompt does not provide.
+Use the plus button in the header to begin a new trip and clear the current TripTree workspace.
 
-Common missing preferences:
+## Errors
 
-- budget
-- walking tolerance
-- transport style
-- accommodation area
-- dietary restrictions
-- nightlife preference
-- touristy vs local style
-- accessibility needs
-
-Missing preferences appear as selectable options or text inputs, depending on what the backend returns.
-
-### Memory-Derived Preferences
-
-If you saved preferences earlier, the Memory Agent stores them in `localStorage`.
-
-Future prompts can reuse them. Memory-derived assumptions are labeled as memory-based so users can distinguish saved preferences from new inferences.
-
-## 6. Impact Levels
-
-The Assumption Critic Agent assigns impact levels:
-
-- `Low`: minor wording or small preference fit issue.
-- `Medium`: could change several activity choices, timing, or comfort.
-- `High`: could change itinerary structure, budget, accessibility, walking load, booking needs, or core experience.
-
-High-impact unresolved items are surfaced in the checkpoint card so users address them before planning.
-
-## 7. Agent Roles
-
-### Preference Agent
-
-Purpose:
-
-- detects explicit preferences
-- infers likely preferences
-- identifies missing preferences
-- labels memory-derived preferences
-
-Output includes:
-
-- `assumptions`
-- `missingPreferences`
-- `memoryDerivedPreferenceIds`
-- short summary
-
-The agent does not generate an itinerary.
-
-### Assumption Critic Agent
-
-Purpose:
-
-- reviews assumptions and missing preferences
-- flags risky or high-impact items
-- explains why each risk matters
-- recommends a user-facing confirmation question
-
-Output includes:
-
-- `critiques`
-- impact level
-- reason
-- suggested resolution
-
-The critic does not generate an itinerary.
-
-### Planner Agent
-
-Purpose:
-
-- generates itinerary options only after confirmed preferences exist
-- uses accepted assumptions, user edits, missing-preference answers, and memory
-- creates day-by-day itinerary JSON
-
-Output includes:
-
-- destination
-- duration
-- itinerary options
-- itinerary days
-- activities
-- alternatives
-- cost, walking, transit, pacing, booking-risk, and opening-hour-risk fields
-
-The UI renders however many days the backend returns.
-
-### Constraint Checker Agent
-
-Purpose:
-
-- checks the generated itinerary for feasibility issues
-- flags walking load, travel time, budget mismatch, booking risk, opening-hour risk, and pacing problems
-
-Output includes:
-
-- warnings
-- affected day
-- impact
-- recommendation
-
-This agent reviews the plan but does not rewrite it.
-
-### Memory Agent
-
-Purpose:
-
-- stores confirmed preferences in browser `localStorage`
-- reuses saved preferences in later prompts
-- clearly labels memory-derived preferences
-
-Memory is local to the current browser and device.
-
-## 8. What The Views Show
-
-### Plan View
-
-Shows the complete workflow:
-
-- left assumption and checkpoint controls
-- center itinerary canvas
-- right backend timeline and memory/explanation panels
-
-### Assumptions View
-
-Focuses on:
-
-- inferred assumptions
-- missing preferences
-- high-impact checkpoint
-- backend process visibility
-
-Use this view when you want to inspect and correct assumptions before planning.
-
-### Canvas View
-
-Focuses on:
-
-- itinerary options
-- day cards
-- activity cards
-- influence badges
-- alternatives
-- constraint warnings
-
-Use this view after generating an itinerary.
-
-## 9. Language Support
-
-Use the top language selector to switch between English and Chinese.
-
-When Chinese is selected:
-
-- UI labels switch to Chinese.
-- API requests include `language: "zh"`.
-- agents are instructed to write user-facing fields in Simplified Chinese.
-- schema keys and enum values stay in English for validation stability.
-
-This means fields like `category`, `impact`, and `status` remain stable internally, while visible descriptions, questions, rationales, summaries, and itinerary text can be Chinese.
-
-## 10. Data Validation
-
-All LLM outputs are structured JSON and validated with Zod.
-
-The app validates:
-
-- assumptions
-- missing preferences
-- critiques
-- itineraries
-- days
-- activities
-- alternatives
-- warnings
-- agent traces
-- memory
-
-The schema normalizes common provider variations. For example:
-
-- lowercase risk values can be normalized to `Low`, `Medium`, or `High`
-- `optionId` can be normalized to `id`
-- `estimatedCostEUR` can be normalized to `estimatedCostEur`
-- `Confirmed` can be normalized into the app's checkpoint-oriented status model
-
-The app no longer rejects valid agent outputs only because arrays are longer than expected. It validates item shape instead of imposing brittle UI-sized caps.
-
-## 11. Troubleshooting
-
-### Agent call failed because of missing API key
-
-Check `.env`.
-
-For OpenRouter:
-
-```env
-LLM_PROVIDER=openrouter
-OPENROUTER_API_KEY=your_key_here
-```
-
-For OpenAI, only if explicitly opting back in:
-
-```env
-LLM_PROVIDER=openai
-OPENAI_API_KEY=your_key_here
-```
-
-Restart the dev server after changing `.env`.
-
-### The generated plan looks too generic
-
-Add or confirm more preferences:
-
-- budget
-- pace
-- accommodation area
-- walking tolerance
-- food preferences
-- transport style
-- must-see interests
-
-Then generate again.
-
-### Chinese content is mixed with English
-
-Some internal labels, ids, schema keys, and enum values intentionally stay in English for validation. User-facing summaries, questions, rationales, itinerary text, and warning descriptions should follow the selected language.
-
-### Memory seems stale
-
-Use the Memory Panel trash button to clear local memory, then analyze again.
-
-## 12. Limitations
-
-- The app does not live-check ticket inventory, transit disruptions, or current opening hours.
-- Costs and walking distances are estimates from the LLM, not verified external data.
-- Memory is local to browser `localStorage`.
-- There is no authentication or server-side user profile.
-- JSON mode improves structure but does not guarantee factual correctness.
-
-## 13. Good Demo Prompts
-
-English:
-
-```text
-Plan a 3-day trip to Seoul for food, markets, and modern design. Keep walking moderate.
-```
-
-```text
-Plan a 5-day family trip to Barcelona. We like architecture and beaches but need a relaxed pace.
-```
-
-Chinese:
-
-```text
-帮我规划一个京都两日游，重点是寺庙和当地美食，节奏不要太赶。
-```
-
-```text
-帮我规划一个东京三日游，预算中等，喜欢动漫、咖啡馆和夜景。
-```
-
+If a provider request fails, the error appears above the tree. Existing branches and checkpoints remain available. You can restore a checkpoint, change a trip rule, or resume the interrupted stage after fixing provider configuration.

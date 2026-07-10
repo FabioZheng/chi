@@ -33,7 +33,7 @@ Focus on concrete, hard contradictions. Do not invent issues from missing inform
 Write all user-facing text in the requested outputLanguage. Keep JSON field names, enum values, ids, category values, and severity values in English exactly as specified.
 `;
 
-export async function runInputConsistencyAgent(input: PlanRequest) {
+export async function runInputConsistencyAgent(input: PlanRequest, signal?: AbortSignal) {
   return callJsonAgent({
     agentName: "Input Consistency Agent",
     schema: InputConsistencyOutputSchema,
@@ -46,6 +46,7 @@ export async function runInputConsistencyAgent(input: PlanRequest) {
       null,
       2
     ),
-    temperature: 0
+    temperature: 0,
+    signal
   });
 }

@@ -3,7 +3,7 @@ import { PlannerAgentOutputSchema } from "@/schemas/travel";
 import type { PlanRequest } from "@/types/travel";
 
 const SYSTEM_PROMPT = `
-You are the Planner Agent for an assumption-aware travel planner.
+You are the Planner Agent for a checkpoint-based, branch-visible travel planner.
 Generate a day-by-day itinerary only after preferences have been confirmed, edited, or explicitly provided.
 Use the request, confirmed preferences, accepted assumptions, and local memory.
 
@@ -113,6 +113,7 @@ Return JSON with:
   }
 }
 
+If the request includes a "skeleton", the traveler chose it interactively by steering the planning search: it is a HARD CONTRACT. Use exactly its cities in order with exactly its nights allocation, its durationDays, its movementPattern, and its register. Every anchor listed in the skeleton must appear as a scheduled activity. Generate exactly 1 itinerary option that realizes this skeleton; do not add, drop, or reorder cities.
 If the request includes an "optionDirective", generate exactly 1 itinerary option that follows that directive; its title and positioning must reflect the directive. Otherwise generate 2 itinerary options when feasible.
 Each activity must include relatedPreferenceIds: an array of the learnedPreference ids (from the request) that directly shaped that activity. Use an empty array when no learned preference influenced it. Never invent ids.
 Each day should include 2 to 6 activities, alternatives, realistic pacing notes, estimated walking, estimated cost in EUR, transit time, booking risk, opening-hour risk, and preference fit.
@@ -123,7 +124,7 @@ Keep every description, fitSummary, pacingNote, and basis under 20 words.
 Each option should include costBreakdown with accommodation, transport, food, attractions, localTransit, optionalActivities, and other when relevant. Include per-day and total estimates where possible.
 Each day should include costBreakdown where possible and accommodation describing where the traveler sleeps that night and whether it changes from the previous night.
 Use the reviewed transportAssumptions, accommodationAssumptions, and costAssumptions from the request when they are present unless a confirmed preference contradicts them.
-Use learnedPreferences and probeAnswers as primary planning guidance. Treat learnedPreferences as the user's active hidden-preference profile; preferences omitted from the request should not influence the plan.
+Use learnedPreferences and probeAnswers as primary planning guidance. Treat learnedPreferences as the active trip rules and branch-choice signals; omitted preferences should not influence the plan.
 The prompt may have been refined after the preferences were learned. Treat any concrete constraint in the prompt (destination, dates, budget cap, must-include or must-avoid items, party size) as a hard requirement layered on top of the learned preferences. When the prompt names a different destination or timeframe than a retained assumption implies, follow the prompt and silently drop the stale assumption rather than mixing locations.
 Preferences whose planningImpact is marked "LATEST INSTRUCTION" are the traveler's newest explicit request: they take ABSOLUTE precedence over every other learned preference or assumption they conflict with, and the plan must visibly change to satisfy them.
 If the prompt contains a "Refinement request" line, that line is the traveler's latest instruction and OVERRIDES any learned preference or assumption it conflicts with. For example, "prioritise less touristy places" must actually change activity selection toward local, off-the-beaten-path spots and away from headline tourist sights, even if an earlier learned preference favored major sights. Keep the established destinations and trip length unless the refinement explicitly changes them, but genuinely change the affected activities, pacing, or budget so the new plan visibly differs from the previous one.
@@ -133,7 +134,7 @@ Write all user-facing text in the requested outputLanguage. Keep JSON field name
 Do not claim real-time availability. When exact opening hours or tickets matter, encode risk through bookingRisk and openingHoursRisk.
 `;
 
-export async function runPlannerAgent(input: PlanRequest, optionDirective?: string) {
+export async function runPlannerAgent(input: PlanRequest, optionDirective?: string, signal?: AbortSignal) {
   return callJsonAgent({
     agentName: "Planner Agent",
     schema: PlannerAgentOutputSchema,
@@ -147,6 +148,7 @@ export async function runPlannerAgent(input: PlanRequest, optionDirective?: stri
       null,
       2
     ),
-    temperature: 0.35
+    temperature: 0.35,
+    signal
   });
 }

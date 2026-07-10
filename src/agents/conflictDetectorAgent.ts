@@ -74,7 +74,7 @@ Write all user-facing text in the requested outputLanguage. Keep JSON field name
 Do not generate assumptions or an itinerary.
 `;
 
-export async function runConflictDetectorAgent(input: AnalyzeRequest) {
+export async function runConflictDetectorAgent(input: AnalyzeRequest, signal?: AbortSignal) {
   return callJsonAgent({
     agentName: "Conflict Detector Agent",
     schema: ConflictDetectorOutputSchema,
@@ -89,6 +89,7 @@ export async function runConflictDetectorAgent(input: AnalyzeRequest) {
       null,
       2
     ),
-    temperature: 0.25
+    temperature: 0.25,
+    signal
   });
 }

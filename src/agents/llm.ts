@@ -8,6 +8,7 @@ type CallJsonAgentArgs<T> = {
   system: string;
   user: string;
   temperature?: number;
+  signal?: AbortSignal;
 };
 
 type ChatMessage = {
@@ -20,6 +21,17 @@ type ProviderConfig = {
   model: string;
   headers: Record<string, string>;
 };
+
+function deploymentUrl(): string {
+  const explicit = process.env.OPENROUTER_SITE_URL?.trim();
+
+  if (explicit) {
+    return explicit;
+  }
+
+  const vercelHost = process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
+  return vercelHost ? `https://${vercelHost}` : "http://localhost:3000";
+}
 
 export class AgentError extends Error {
   constructor(
@@ -37,6 +49,8 @@ const JSON_RULES = [
   "Use concise rationale and summary fields only.",
   "Every array item must include a stable id."
 ].join(" ");
+
+const PROVIDER_TIMEOUT_MS = 105_000;
 
 function resolveProvider(): Provider {
   const configured = process.env.LLM_PROVIDER?.toLowerCase();
@@ -66,8 +80,8 @@ function providerConfig(provider: Provider): ProviderConfig {
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": process.env.OPENROUTER_SITE_URL || "http://localhost:3000",
-        "X-Title": process.env.OPENROUTER_APP_NAME || "Assumption-Aware Agent Planner"
+        "HTTP-Referer": deploymentUrl(),
+        "X-Title": process.env.OPENROUTER_APP_NAME || "TripTree"
       }
     };
   }
@@ -136,7 +150,8 @@ export async function callJsonAgent<T>({
   schema,
   system,
   user,
-  temperature = 0.2
+  temperature = 0.2,
+  signal
 }: CallJsonAgentArgs<T>): Promise<T> {
   const provider = resolveProvider();
   const config = providerConfig(provider);
@@ -151,33 +166,59 @@ export async function callJsonAgent<T>({
     }
   ];
 
-  const response = await fetch(config.url, {
-    method: "POST",
-    headers: config.headers,
-    body: JSON.stringify({
-      model: config.model,
-      messages,
-      temperature,
-      response_format: { type: "json_object" }
-    })
-  });
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort(signal?.reason);
+  const timeout = setTimeout(() => controller.abort("provider-timeout"), PROVIDER_TIMEOUT_MS);
 
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new AgentError(`${agentName} provider call failed: ${detail}`, "PROVIDER");
+  if (signal?.aborted) {
+    abortFromCaller();
+  } else {
+    signal?.addEventListener("abort", abortFromCaller, { once: true });
   }
 
-  const payload = await response.json();
-  const content = extractMessageContent(payload);
-  const rawJson = parseJsonObject(content);
-  const validated = schema.safeParse(rawJson);
+  try {
+    const response = await fetch(config.url, {
+      method: "POST",
+      headers: config.headers,
+      body: JSON.stringify({
+        model: config.model,
+        messages,
+        temperature,
+        response_format: { type: "json_object" }
+      }),
+      signal: controller.signal
+    });
 
-  if (!validated.success) {
-    throw new AgentError(
-      `${agentName} returned JSON that failed validation: ${validated.error.message}`,
-      "VALIDATION"
-    );
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new AgentError(`${agentName} provider call failed: ${detail}`, "PROVIDER");
+    }
+
+    const payload = await response.json();
+    const content = extractMessageContent(payload);
+    const rawJson = parseJsonObject(content);
+    const validated = schema.safeParse(rawJson);
+
+    if (!validated.success) {
+      throw new AgentError(
+        `${agentName} returned JSON that failed validation: ${validated.error.message}`,
+        "VALIDATION"
+      );
+    }
+
+    return validated.data;
+  } catch (error) {
+    if (error instanceof AgentError) {
+      throw error;
+    }
+
+    if (controller.signal.aborted) {
+      throw new AgentError(`${agentName} request was cancelled or timed out.`, "PROVIDER");
+    }
+
+    throw new AgentError(`${agentName} provider request failed.`, "PROVIDER");
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromCaller);
   }
-
-  return validated.data;
 }

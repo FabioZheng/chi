@@ -20,6 +20,39 @@ type RouteResult = {
 
 const geocodeCache = new Map<string, GeocodeResult>();
 const routeCache = new Map<string, RouteResult>();
+const GOOGLE_REQUEST_TIMEOUT_MS = 20_000;
+
+function boundedSignal(parent?: AbortSignal) {
+  const controller = new AbortController();
+  const abortFromParent = () => controller.abort(parent?.reason);
+  const timeout = setTimeout(() => controller.abort("google-timeout"), GOOGLE_REQUEST_TIMEOUT_MS);
+
+  if (parent?.aborted) {
+    abortFromParent();
+  } else {
+    parent?.addEventListener("abort", abortFromParent, { once: true });
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup() {
+      clearTimeout(timeout);
+      parent?.removeEventListener("abort", abortFromParent);
+    }
+  };
+}
+
+async function fetchJson<T>(input: URL | string, init: RequestInit, parent?: AbortSignal) {
+  const request = boundedSignal(parent);
+
+  try {
+    const response = await fetch(input, { ...init, signal: request.signal });
+    const payload = (await response.json()) as T;
+    return { response, payload };
+  } finally {
+    request.cleanup();
+  }
+}
 
 function googleMapsKey() {
   return (process.env.GOOGLE_MAPS_API_KEY || "").trim();
@@ -68,7 +101,12 @@ function parseDurationSeconds(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-async function geocodePlace(place: MapPlace, destination: string, apiKey: string): Promise<GeocodeResult> {
+async function geocodePlace(
+  place: MapPlace,
+  destination: string,
+  apiKey: string,
+  signal?: AbortSignal
+): Promise<GeocodeResult> {
   if (place.coordinates) {
     return {
       coordinates: place.coordinates,
@@ -100,8 +138,7 @@ async function geocodePlace(place: MapPlace, destination: string, apiKey: string
     url.searchParams.set("address", query);
     url.searchParams.set("key", apiKey);
 
-    const response = await fetch(url);
-    const payload = (await response.json()) as {
+    const { payload } = await fetchJson<{
       status?: string;
       results?: Array<{
         partial_match?: boolean;
@@ -112,7 +149,7 @@ async function geocodePlace(place: MapPlace, destination: string, apiKey: string
         };
       }>;
       error_message?: string;
-    };
+    }>(url, {}, signal);
 
     const first = payload.results?.[0];
     const location = first?.geometry?.location;
@@ -138,6 +175,10 @@ async function geocodePlace(place: MapPlace, destination: string, apiKey: string
     geocodeCache.set(key, result);
     return result;
   } catch (error) {
+    if (signal?.aborted) {
+      throw error;
+    }
+
     const result = {
       coordinates: null,
       locationStatus: "Unavailable" as const,
@@ -153,6 +194,7 @@ async function computeRoute(input: {
   to: Coordinates;
   mode: string;
   apiKey: string;
+  signal?: AbortSignal;
 }): Promise<RouteResult> {
   const googleMode = routeModeForGoogle(input.mode);
   const key = cacheKey([
@@ -183,30 +225,32 @@ async function computeRoute(input: {
   }
 
   try {
-    const response = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": input.apiKey,
-        "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline"
-      },
-      body: JSON.stringify({
-        origin: { location: { latLng: { latitude: input.from.lat, longitude: input.from.lng } } },
-        destination: { location: { latLng: { latitude: input.to.lat, longitude: input.to.lng } } },
-        travelMode: googleMode,
-        polylineQuality: "HIGH_QUALITY",
-        computeAlternativeRoutes: false
-      })
-    });
-
-    const payload = (await response.json()) as {
+    const { response, payload } = await fetchJson<{
       routes?: Array<{
         duration?: string;
         distanceMeters?: number;
         polyline?: { encodedPolyline?: string };
       }>;
       error?: { message?: string };
-    };
+    }>(
+      "https://routes.googleapis.com/directions/v2:computeRoutes",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": input.apiKey,
+          "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline"
+        },
+        body: JSON.stringify({
+          origin: { location: { latLng: { latitude: input.from.lat, longitude: input.from.lng } } },
+          destination: { location: { latLng: { latitude: input.to.lat, longitude: input.to.lng } } },
+          travelMode: googleMode,
+          polylineQuality: "HIGH_QUALITY",
+          computeAlternativeRoutes: false
+        })
+      },
+      input.signal
+    );
     const route = payload.routes?.[0];
     const encodedPolyline = route?.polyline?.encodedPolyline || null;
 
@@ -234,6 +278,10 @@ async function computeRoute(input: {
     routeCache.set(key, result);
     return result;
   } catch (error) {
+    if (input.signal?.aborted) {
+      throw error;
+    }
+
     const result = {
       distanceMeters: 0,
       durationSeconds: 0,
@@ -260,10 +308,10 @@ function withRouteFallback(segment: RouteSegment, warning: string): RouteSegment
   };
 }
 
-async function enrichPlaces(places: MapPlace[], destination: string, apiKey: string) {
+async function enrichPlaces(places: MapPlace[], destination: string, apiKey: string, signal?: AbortSignal) {
   return Promise.all(
     places.map(async (place) => {
-      const result = await geocodePlace(place, destination, apiKey);
+      const result = await geocodePlace(place, destination, apiKey, signal);
 
       return {
         ...place,
@@ -275,7 +323,12 @@ async function enrichPlaces(places: MapPlace[], destination: string, apiKey: str
   );
 }
 
-async function enrichSegments(segments: RouteSegment[], lookup: Map<string, MapPlace>, apiKey: string) {
+async function enrichSegments(
+  segments: RouteSegment[],
+  lookup: Map<string, MapPlace>,
+  apiKey: string,
+  signal?: AbortSignal
+) {
   return Promise.all(
     segments.map(async (segment) => {
       const from = lookup.get(segment.fromPlaceId) || lookup.get(segment.fromStopId);
@@ -289,7 +342,8 @@ async function enrichSegments(segments: RouteSegment[], lookup: Map<string, MapP
         from: from.coordinates,
         to: to.coordinates,
         mode: segment.transportMode,
-        apiKey
+        apiKey,
+        signal
       });
 
       if (route.geometryStatus !== "Real") {
@@ -340,8 +394,13 @@ function buildPlaceLookup(places: MapPlace[]) {
   return lookup;
 }
 
-async function enrichOption(option: ItineraryOption, destination: string, apiKey: string): Promise<ItineraryOption> {
-  const mapPlaces = await enrichPlaces(option.mapPlaces, destination, apiKey);
+async function enrichOption(
+  option: ItineraryOption,
+  destination: string,
+  apiKey: string,
+  signal?: AbortSignal
+): Promise<ItineraryOption> {
+  const mapPlaces = await enrichPlaces(option.mapPlaces, destination, apiKey, signal);
   const days = await Promise.all(
     option.days.map(async (day) => ({
       ...day,
@@ -361,7 +420,7 @@ async function enrichOption(option: ItineraryOption, destination: string, apiKey
             sourceActivityId: activity.id,
             unavailableReason: activity.locationUnavailableReason
           };
-          const geocoded = await geocodePlace(pseudoPlace, destination, apiKey);
+          const geocoded = await geocodePlace(pseudoPlace, destination, apiKey, signal);
 
           return {
             ...activity,
@@ -387,11 +446,11 @@ async function enrichOption(option: ItineraryOption, destination: string, apiKey
     }))
   );
   const lookup = buildPlaceLookup([...mapPlaces, ...activityPlaces]);
-  const routeSegments = await enrichSegments(option.routeSegments, lookup, apiKey);
+  const routeSegments = await enrichSegments(option.routeSegments, lookup, apiKey, signal);
   const routedDays = await Promise.all(
     days.map(async (day) => ({
       ...day,
-      routeSegments: await enrichSegments(day.routeSegments, lookup, apiKey)
+      routeSegments: await enrichSegments(day.routeSegments, lookup, apiKey, signal)
     }))
   );
 
@@ -403,9 +462,11 @@ async function enrichOption(option: ItineraryOption, destination: string, apiKey
   };
 }
 
-export async function enrichItineraryWithGoogleRoutes(itinerary: Itinerary): Promise<Itinerary> {
+export async function enrichItineraryWithGoogleRoutes(itinerary: Itinerary, signal?: AbortSignal): Promise<Itinerary> {
   const apiKey = googleMapsKey();
-  const options = await Promise.all(itinerary.options.map((option) => enrichOption(option, itinerary.destination, apiKey)));
+  const options = await Promise.all(
+    itinerary.options.map((option) => enrichOption(option, itinerary.destination, apiKey, signal))
+  );
 
   return {
     ...itinerary,

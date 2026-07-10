@@ -3,6 +3,7 @@ import { z } from "zod";
 import { runConstraintCheckerAgent, runInputConsistencyAgent, runPlannerAgent } from "@/agents";
 import { enrichItineraryWithGoogleRoutes } from "@/agents/googleMaps";
 import { AgentError } from "@/agents/llm";
+import { guardApiRequest } from "@/app/api/requestGuard";
 import {
   mergeWarnings,
   runBudgetManagerAgent,
@@ -24,6 +25,7 @@ import type {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 300;
 
 function trace(agent: AgentTrace["agent"], summary: string, count: number, durationMs?: number): AgentTrace {
   return {
@@ -78,15 +80,17 @@ function mergeItineraries(primary: Itinerary, secondary: Itinerary | null): Itin
   };
 }
 
-async function runPlannerStage(body: z.infer<typeof PlanRequestSchema>) {
-  if (process.env.PARALLEL_PLANNER === "0") {
-    const single = await runPlannerAgent(body);
+async function runPlannerStage(body: z.infer<typeof PlanRequestSchema>, signal?: AbortSignal) {
+  // A committed skeleton already IS the user's chosen branch: one constrained
+  // planner call realizes it — no need to generate a discarded alternative.
+  if (body.skeleton || process.env.PARALLEL_PLANNER === "0") {
+    const single = await runPlannerAgent(body, undefined, signal);
     return { summary: single.summary, itinerary: single.itinerary, agentRuns: 1 };
   }
 
   const [comfort, experience] = await Promise.allSettled([
-    runPlannerAgent(body, OPTION_DIRECTIVES.comfort),
-    runPlannerAgent(body, OPTION_DIRECTIVES.experience)
+    runPlannerAgent(body, OPTION_DIRECTIVES.comfort, signal),
+    runPlannerAgent(body, OPTION_DIRECTIVES.experience, signal)
   ]);
 
   if (comfort.status === "rejected" && experience.status === "rejected") {
@@ -162,17 +166,22 @@ function consistencyErrorMessage(validation: InputConsistencyOutput, language: "
 function errorResponse(error: unknown) {
   if (error instanceof AgentError) {
     const status = error.code === "CONFIG" ? 500 : 502;
-    return NextResponse.json({ error: error.message, code: error.code }, { status });
+    console.error(`[plan:${error.code}]`, error.message);
+    const message = error.code === "CONFIG" ? error.message : "The planning provider could not complete this request.";
+    return NextResponse.json({ error: message, code: error.code }, { status });
   }
 
   if (error instanceof z.ZodError) {
-    return NextResponse.json({ error: error.message, code: "VALIDATION" }, { status: 400 });
+    return NextResponse.json({ error: "Planning request validation failed.", code: "VALIDATION" }, { status: 400 });
   }
 
   return NextResponse.json({ error: "Unexpected planning failure.", code: "UNKNOWN" }, { status: 500 });
 }
 
 export async function POST(request: Request) {
+  const blocked = guardApiRequest(request, "plan", 6);
+  if (blocked) return blocked;
+
   try {
     const body = PlanRequestSchema.parse(await request.json());
 
@@ -182,8 +191,8 @@ export async function POST(request: Request) {
     // same signal) to cut input tokens and time-to-first-token.
     const plannerBody = { ...body, detectedConflicts: [] };
     const [consistencyRun, plannerRun] = await Promise.all([
-      timed(() => runInputConsistencyAgent(body)),
-      timed(() => runPlannerStage(plannerBody))
+      timed(() => runInputConsistencyAgent(body, request.signal)),
+      timed(() => runPlannerStage(plannerBody, request.signal))
     ]);
     const consistency = consistencyRun.value;
     const blockingIssues = consistency.issues.filter((issue) => issue.severity === "Blocking");
@@ -205,15 +214,18 @@ export async function POST(request: Request) {
     const planner = plannerRun.value;
     const scaffolded = buildRouteScaffold(sanitizeItineraryCoordinates(planner.itinerary, body.language), body.language);
     const [routedRun, checkerRun] = await Promise.all([
-      timed(() => enrichItineraryWithGoogleRoutes(scaffolded)),
+      timed(() => enrichItineraryWithGoogleRoutes(scaffolded, request.signal)),
       timed(() =>
-        runConstraintCheckerAgent({
-          prompt: body.prompt,
-          itinerary: scaffolded,
-          confirmedPreferences: body.confirmedPreferences,
-          memory: body.memory,
-          language: body.language
-        })
+        runConstraintCheckerAgent(
+          {
+            prompt: body.prompt,
+            itinerary: scaffolded,
+            confirmedPreferences: body.confirmedPreferences,
+            memory: body.memory,
+            language: body.language
+          },
+          request.signal
+        )
       )
     ]);
     const routedItinerary = routedRun.value;

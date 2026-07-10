@@ -1,0 +1,7 @@
+.claude
+.github
+docs
+tools
+.env*
+*.log
+*.py

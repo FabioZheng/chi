@@ -27,7 +27,7 @@ export async function runAssumptionCriticAgent(input: {
   assumptions: Assumption[];
   missingPreferences: MissingPreference[];
   language: "en" | "zh";
-}) {
+}, signal?: AbortSignal) {
   return callJsonAgent({
     agentName: "Assumption Critic Agent",
     schema: AssumptionCriticOutputSchema,
@@ -40,6 +40,7 @@ export async function runAssumptionCriticAgent(input: {
       null,
       2
     ),
-    temperature: 0.15
+    temperature: 0.15,
+    signal
   });
 }

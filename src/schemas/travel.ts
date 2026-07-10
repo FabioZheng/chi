@@ -403,6 +403,7 @@ export const AgentNameSchema = z.enum([
   "Preference Agent",
   "Assumption Critic Agent",
   "Input Consistency Agent",
+  "Branch Explorer Agent",
   "Planner Agent",
   "Constraint Checker Agent",
   "Budget Manager Agent",
@@ -1453,9 +1454,9 @@ export const ConstraintCheckerOutputSchema = z.object({
 });
 
 export const AnalyzeRequestSchema = z.object({
-  prompt: z.string().min(4),
+  prompt: z.string().min(4).max(2000),
   memory: UserMemorySchema.nullable(),
-  learnedPreferences: z.array(LearnedPreferenceSchema).default([]),
+  learnedPreferences: z.array(LearnedPreferenceSchema).max(50).default([]),
   language: LanguageSchema.default("en")
 });
 
@@ -1474,9 +1475,9 @@ export const AnalyzeResponseSchema = z.object({
 });
 
 export const PreferenceProbeRequestSchema = z.object({
-  prompt: z.string().min(4),
-  detectedConflicts: z.array(DetectedConflictSchema),
-  probeAnswers: z.array(PreferenceProbeAnswerSchema),
+  prompt: z.string().min(4).max(2000),
+  detectedConflicts: z.array(DetectedConflictSchema).max(30),
+  probeAnswers: z.array(PreferenceProbeAnswerSchema).max(30),
   memory: UserMemorySchema.nullable(),
   language: LanguageSchema.default("en")
 });
@@ -1492,16 +1493,26 @@ export const PreferenceProbeResponseSchema = z.object({
   trace: z.array(AgentTraceSchema)
 });
 
+// Skeleton committed through branch exploration: the planner must follow it.
+export const PlanSkeletonSchema = z.object({
+  durationDays: z.number().int().min(1).max(90),
+  movementPattern: z.string().min(1).max(300),
+  register: z.string().min(1).max(300),
+  anchors: z.array(z.string().max(200)).max(20),
+  cities: z.array(z.object({ name: z.string().min(1).max(120), nights: z.number().int().min(0).max(90) })).max(20)
+});
+
 export const PlanRequestSchema = z.object({
-  prompt: z.string().min(4),
-  detectedConflicts: z.array(DetectedConflictSchema).default([]),
-  probeAnswers: z.array(PreferenceProbeAnswerSchema).default([]),
-  learnedPreferences: z.array(LearnedPreferenceSchema).default([]),
-  assumptions: z.array(AssumptionSchema),
-  transportAssumptions: z.array(TransportAssumptionSchema).default([]),
-  accommodationAssumptions: z.array(AccommodationAssumptionSchema).default([]),
-  costAssumptions: z.array(CostAssumptionSchema).default([]),
-  confirmedPreferences: z.array(ConfirmedPreferenceSchema),
+  prompt: z.string().min(4).max(4000),
+  detectedConflicts: z.array(DetectedConflictSchema).max(30).default([]),
+  probeAnswers: z.array(PreferenceProbeAnswerSchema).max(30).default([]),
+  learnedPreferences: z.array(LearnedPreferenceSchema).max(50).default([]),
+  assumptions: z.array(AssumptionSchema).max(100),
+  transportAssumptions: z.array(TransportAssumptionSchema).max(100).default([]),
+  accommodationAssumptions: z.array(AccommodationAssumptionSchema).max(100).default([]),
+  costAssumptions: z.array(CostAssumptionSchema).max(100).default([]),
+  confirmedPreferences: z.array(ConfirmedPreferenceSchema).max(50),
+  skeleton: PlanSkeletonSchema.nullable().default(null),
   memory: UserMemorySchema.nullable(),
   language: LanguageSchema.default("en")
 });
@@ -1541,4 +1552,130 @@ export const PlanResponseSchema = z.object({
   memoryStatus: MemoryStatusSchema,
   trace: z.array(AgentTraceSchema),
   digests: z.array(PlanDigestSchema).default([])
+});
+
+/* ------------------------------------------------------------------ */
+/* Branch exploration: the planner's search tree, made visible and    */
+/* steerable. Each node is one structural commitment (trip shape,     */
+/* rhythm, anchors) the user can pin or prune mid-generation.         */
+/* ------------------------------------------------------------------ */
+
+export const BranchDimensionSchema = z.enum(["tripShape", "rhythm", "anchors", "logistics"]);
+
+export const BranchCitySchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const coordinates = normalizedCoordinates(record.coordinates ?? { lat: record.lat, lng: record.lng });
+
+  const nightsRaw = Number(record.nights ?? record.nightCount ?? 1);
+
+  return {
+    name: asText(record.name ?? record.city ?? record.title, "City"),
+    nights: Number.isFinite(nightsRaw) ? Math.max(0, Math.round(nightsRaw)) : 1,
+    lat: coordinates?.lat ?? null,
+    lng: coordinates?.lng ?? null
+  };
+}, z.object({
+  name: z.string().min(1),
+  nights: z.number().int().min(0),
+  lat: z.number().min(-90).max(90).nullable(),
+  lng: z.number().min(-180).max(180).nullable()
+}));
+
+export const BranchCandidateSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const title = asText(record.title ?? record.name, "Trip direction");
+  const rawAssumptions = record.implicitAssumptions ?? record.assumptions;
+  const rawAnchors = record.anchors ?? record.keyExperiences;
+  const revealedRaw = asRecord(record.revealedPreference ?? record.reveals);
+  const revealedValue = asText(revealedRaw.value ?? revealedRaw.preference, "");
+
+  return {
+    title,
+    summary: asText(record.summary ?? record.description, "A distinct direction for this trip."),
+    durationDays: Math.max(1, Math.round(Number(record.durationDays ?? record.days ?? 0) || 0)) || 1,
+    movementPattern: asText(record.movementPattern ?? record.pattern, "linear chain"),
+    register: asText(record.register ?? record.experienceStyle ?? record.style, "balanced"),
+    anchors: (Array.isArray(rawAnchors) ? rawAnchors : []).map((item) => asText(item)).filter((item) => item.length > 0),
+    cities: Array.isArray(record.cities) ? record.cities : [],
+    implicitAssumptions: (Array.isArray(rawAssumptions) ? rawAssumptions : []).map((item) => asText(item)).filter((item) => item.length > 0),
+    revealedPreference:
+      revealedValue.length > 0
+        ? { category: normalizedCategory(revealedRaw.category), value: revealedValue }
+        : null,
+    confidence: normalizedConfidence(record.confidence)
+  };
+}, z.object({
+  title: z.string().min(1),
+  summary: z.string().min(1),
+  durationDays: z.number().int().min(1),
+  movementPattern: z.string().min(1),
+  register: z.string().min(1),
+  anchors: z.array(z.string()),
+  cities: z.array(BranchCitySchema),
+  implicitAssumptions: z.array(z.string()),
+  revealedPreference: z.object({ category: PreferenceCategorySchema, value: z.string().min(1) }).nullable(),
+  confidence: z.number().min(0).max(1)
+}));
+
+export const BranchEstimatesSchema = z.object({
+  transferKm: z.number().min(0),
+  transferHours: z.number().min(0),
+  moveCount: z.number().int().min(0),
+  budgetBandMinEur: z.number().min(0),
+  budgetBandMaxEur: z.number().min(0),
+  pace: PaceRatingSchema
+});
+
+export const PlanNodeStatusSchema = z.enum(["candidate", "pinned", "pruned"]);
+
+export const PlanNodeSchema = z.object({
+  id: z.string().min(1),
+  parentId: z.string().nullable(),
+  level: z.number().int().min(1),
+  dimension: BranchDimensionSchema,
+  title: z.string().min(1),
+  summary: z.string().min(1),
+  durationDays: z.number().int().min(1),
+  movementPattern: z.string().min(1),
+  register: z.string().min(1),
+  anchors: z.array(z.string()),
+  cities: z.array(BranchCitySchema),
+  implicitAssumptions: z.array(z.string()),
+  revealedPreference: z.object({ category: PreferenceCategorySchema, value: z.string().min(1) }).nullable(),
+  estimates: BranchEstimatesSchema,
+  confidence: z.number().min(0).max(1),
+  status: PlanNodeStatusSchema,
+  sourceAgent: AgentNameSchema.optional()
+});
+
+export const BranchExplorerOutputSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const rawCandidates = record.candidates ?? record.branches ?? record.options;
+
+  return {
+    rationale: asText(record.rationale ?? record.summary, "Distinct directions for the next planning decision."),
+    candidates: Array.isArray(rawCandidates) ? rawCandidates : []
+  };
+}, z.object({
+  rationale: z.string().min(1),
+  candidates: z.array(BranchCandidateSchema).min(1).max(5)
+}));
+
+export const ExpandRequestSchema = z.object({
+  prompt: z.string().min(4).max(2000),
+  dimension: BranchDimensionSchema,
+  parent: PlanNodeSchema.nullable().default(null),
+  committedPath: z.array(PlanNodeSchema).max(10).default([]),
+  excludedTitles: z.array(z.string().max(200)).max(50).default([]),
+  guidance: z.string().max(1000).default(""),
+  learnedPreferences: z.array(LearnedPreferenceSchema).max(50).default([]),
+  probeAnswers: z.array(PreferenceProbeAnswerSchema).max(30).default([]),
+  memory: UserMemorySchema.nullable().default(null),
+  language: LanguageSchema.default("en")
+});
+
+export const ExpandResponseSchema = z.object({
+  nodes: z.array(PlanNodeSchema),
+  rationale: z.string().min(1),
+  trace: z.array(AgentTraceSchema)
 });

@@ -2,11 +2,13 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { runConflictDetectorAgent } from "@/agents";
 import { AgentError } from "@/agents/llm";
+import { guardApiRequest } from "@/app/api/requestGuard";
 import { AnalyzeRequestSchema, AnalyzeResponseSchema } from "@/schemas/travel";
 import type { AgentTrace, MemoryStatus, UserMemory } from "@/types/travel";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 120;
 
 function trace(agent: AgentTrace["agent"], summary: string, count: number, durationMs?: number): AgentTrace {
   return {
@@ -40,21 +42,26 @@ function memoryStatus(memory: UserMemory | null, language: "en" | "zh"): MemoryS
 function errorResponse(error: unknown) {
   if (error instanceof AgentError) {
     const status = error.code === "CONFIG" ? 500 : 502;
-    return NextResponse.json({ error: error.message, code: error.code }, { status });
+    console.error(`[analyze:${error.code}]`, error.message);
+    const message = error.code === "CONFIG" ? error.message : "The analysis provider could not complete this request.";
+    return NextResponse.json({ error: message, code: error.code }, { status });
   }
 
   if (error instanceof z.ZodError) {
-    return NextResponse.json({ error: error.message, code: "VALIDATION" }, { status: 400 });
+    return NextResponse.json({ error: "Analysis request validation failed.", code: "VALIDATION" }, { status: 400 });
   }
 
   return NextResponse.json({ error: "Unexpected conflict detection failure.", code: "UNKNOWN" }, { status: 500 });
 }
 
 export async function POST(request: Request) {
+  const blocked = guardApiRequest(request, "analyze", 10);
+  if (blocked) return blocked;
+
   try {
     const body = AnalyzeRequestSchema.parse(await request.json());
     const startedAt = Date.now();
-    const conflicts = await runConflictDetectorAgent(body);
+    const conflicts = await runConflictDetectorAgent(body, request.signal);
     const durationMs = Date.now() - startedAt;
 
     const response = AnalyzeResponseSchema.parse({

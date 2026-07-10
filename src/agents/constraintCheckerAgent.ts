@@ -36,7 +36,7 @@ export async function runConstraintCheckerAgent(input: {
   confirmedPreferences: ConfirmedPreference[];
   memory: UserMemory | null;
   language: "en" | "zh";
-}) {
+}, signal?: AbortSignal) {
   return callJsonAgent({
     agentName: "Constraint Checker Agent",
     schema: ConstraintCheckerOutputSchema,
@@ -49,6 +49,7 @@ export async function runConstraintCheckerAgent(input: {
       null,
       2
     ),
-    temperature: 0.15
+    temperature: 0.15,
+    signal
   });
 }
