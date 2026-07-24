@@ -1562,6 +1562,122 @@ export const PlanResponseSchema = z.object({
 
 export const BranchDimensionSchema = z.enum(["tripShape", "rhythm", "anchors", "logistics"]);
 
+export const PlanningConfidenceSchema = z.enum(["Low", "Medium", "High"]);
+export const PlanningAssumptionSourceSchema = z.enum([
+  "explicit-user-input",
+  "user-edit",
+  "checkpoint-answer",
+  "profile-memory",
+  "model-inference"
+]);
+export const PlanningAssumptionStatusSchema = z.enum(["active", "corrected", "rejected"]);
+
+function normalizedPlanningConfidence(input: unknown): z.infer<typeof PlanningConfidenceSchema> {
+  if (typeof input === "string") {
+    const value = input.toLowerCase();
+    if (value.includes("low")) return "Low";
+    if (value.includes("high")) return "High";
+    if (value.includes("medium")) return "Medium";
+  }
+
+  const confidence = normalizedConfidence(input);
+  return confidence < 0.45 ? "Low" : confidence >= 0.78 ? "High" : "Medium";
+}
+
+function normalizedPlanningSource(input: unknown): z.infer<typeof PlanningAssumptionSourceSchema> {
+  const value = asText(input, "model-inference").toLowerCase();
+
+  if (value.includes("edit")) return "user-edit";
+  if (value.includes("checkpoint")) return "checkpoint-answer";
+  if (value.includes("memory") || value.includes("saved")) return "profile-memory";
+  if (value.includes("explicit") || value.includes("user") || value.includes("prompt")) return "explicit-user-input";
+  return "model-inference";
+}
+
+function normalizedPlanningStatus(input: unknown): z.infer<typeof PlanningAssumptionStatusSchema> {
+  const value = asText(input, "active").toLowerCase();
+
+  if (value.includes("reject") || value.includes("ignore")) return "rejected";
+  if (value.includes("correct") || value.includes("edit")) return "corrected";
+  return "active";
+}
+
+function stablePlanningId(input: unknown, fallback: string): string {
+  return (
+    asText(input, fallback)
+      .toLowerCase()
+      .replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 64) || fallback
+  );
+}
+
+export const PlanningConsequenceSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const label = typeof input === "string"
+    ? asText(input, "Shapes a downstream planning choice.")
+    : asText(record.label ?? record.effect ?? record.summary, "Shapes a downstream planning choice.");
+  const affectedArea = asText(record.affectedArea ?? record.affected_area ?? record.area, "itinerary");
+
+  return {
+    id: stablePlanningId(record.id, `consequence-${label}`),
+    label,
+    affectedArea,
+    affectedNodeIds: Array.isArray(record.affectedNodeIds ?? record.affected_node_ids)
+      ? (record.affectedNodeIds ?? record.affected_node_ids)
+      : []
+  };
+}, z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  affectedArea: z.string().min(1),
+  affectedNodeIds: z.array(z.string()).default([])
+}));
+
+export const PlanningAssumptionSchema = z.preprocess((input) => {
+  const record = asRecord(input);
+  const stringValue = typeof input === "string" ? asText(input) : "";
+  const category = normalizedCategory(record.category ?? record.type ?? record.key ?? stringValue);
+  const fallbackLabel = category === "other" ? "Planning assumption" : categoryLabels[category];
+  const label = asText(record.label ?? record.title ?? record.name, fallbackLabel);
+  const value = asText(
+    record.value ?? record.assumption ?? record.inferredValue ?? record.inferred_value,
+    stringValue.replace(/^assumes?\s+/i, "") || label
+  );
+
+  return {
+    id: stablePlanningId(record.id, `assumption-${category}-${label}-${value}`),
+    category,
+    label,
+    value,
+    confidence: normalizedPlanningConfidence(record.confidence ?? record.confidenceBand ?? record.confidence_band),
+    impact: normalizedImpact(record.impact ?? record.importance),
+    source: normalizedPlanningSource(record.source),
+    status: normalizedPlanningStatus(record.status),
+    confirmed: normalizedBoolean(record.confirmed, false),
+    locked: normalizedBoolean(record.locked, asText(record.status).toLowerCase().includes("lock")),
+    affectedNodeIds: Array.isArray(record.affectedNodeIds ?? record.affected_node_ids)
+      ? (record.affectedNodeIds ?? record.affected_node_ids)
+      : [],
+    consequences: Array.isArray(record.consequences ?? record.effects) ? (record.consequences ?? record.effects) : [],
+    correctionOptions: normalizedOptions(record.correctionOptions ?? record.correction_options ?? record.options)
+  };
+}, z.object({
+  id: z.string().min(1),
+  category: PreferenceCategorySchema,
+  label: z.string().min(1),
+  value: z.string().min(1),
+  confidence: PlanningConfidenceSchema,
+  impact: ImpactSchema,
+  source: PlanningAssumptionSourceSchema,
+  status: PlanningAssumptionStatusSchema,
+  confirmed: z.boolean(),
+  locked: z.boolean(),
+  affectedNodeIds: z.array(z.string()),
+  consequences: z.array(PlanningConsequenceSchema),
+  correctionOptions: z.array(z.string().min(1)).max(5)
+}));
+
 export const BranchCitySchema = z.preprocess((input) => {
   const record = asRecord(input);
   const coordinates = normalizedCoordinates(record.coordinates ?? { lat: record.lat, lng: record.lng });
@@ -1584,8 +1700,23 @@ export const BranchCitySchema = z.preprocess((input) => {
 export const BranchCandidateSchema = z.preprocess((input) => {
   const record = asRecord(input);
   const title = asText(record.title ?? record.name, "Trip direction");
-  const rawAssumptions = record.implicitAssumptions ?? record.assumptions;
+  const rawAssumptions =
+    Array.isArray(record.assumptions) && record.assumptions.length > 0
+      ? record.assumptions
+      : record.implicitAssumptions;
+  const assumptions = (Array.isArray(rawAssumptions) ? rawAssumptions : []).map((item, index) => {
+    if (typeof item !== "string") return item;
+    return {
+      id: `legacy-assumption-${index + 1}`,
+      label: "Planning assumption",
+      value: item.replace(/^assumes?\s+/i, ""),
+      source: "model-inference",
+      status: "active",
+      confirmed: false
+    };
+  });
   const rawAnchors = record.anchors ?? record.keyExperiences;
+  const rawConsequences = record.consequences ?? record.effects ?? record.planningConsequences;
   const revealedRaw = asRecord(record.revealedPreference ?? record.reveals);
   const revealedValue = asText(revealedRaw.value ?? revealedRaw.preference, "");
 
@@ -1597,7 +1728,24 @@ export const BranchCandidateSchema = z.preprocess((input) => {
     register: asText(record.register ?? record.experienceStyle ?? record.style, "balanced"),
     anchors: (Array.isArray(rawAnchors) ? rawAnchors : []).map((item) => asText(item)).filter((item) => item.length > 0),
     cities: Array.isArray(record.cities) ? record.cities : [],
-    implicitAssumptions: (Array.isArray(rawAssumptions) ? rawAssumptions : []).map((item) => asText(item)).filter((item) => item.length > 0),
+    assumptions:
+      assumptions.length > 0
+        ? assumptions
+        : [{
+            id: "planning-fit",
+            label: "Planning fit",
+            value: "This direction matches the priorities inferred from the request.",
+            confidence: record.confidence,
+            impact: "Medium",
+            source: "model-inference",
+            status: "active",
+            confirmed: false,
+            consequences: [],
+            correctionOptions: []
+          }],
+    consequences: Array.isArray(rawConsequences)
+      ? rawConsequences
+      : [{ id: "downstream-shape", label: "Shapes the remaining route and itinerary choices.", affectedArea: "itinerary" }],
     revealedPreference:
       revealedValue.length > 0
         ? { category: normalizedCategory(revealedRaw.category), value: revealedValue }
@@ -1612,7 +1760,8 @@ export const BranchCandidateSchema = z.preprocess((input) => {
   register: z.string().min(1),
   anchors: z.array(z.string()),
   cities: z.array(BranchCitySchema),
-  implicitAssumptions: z.array(z.string()),
+  assumptions: z.array(PlanningAssumptionSchema).min(1).max(4),
+  consequences: z.array(PlanningConsequenceSchema).max(6),
   revealedPreference: z.object({ category: PreferenceCategorySchema, value: z.string().min(1) }).nullable(),
   confidence: z.number().min(0).max(1)
 }));
@@ -1640,7 +1789,13 @@ export const PlanNodeSchema = z.object({
   register: z.string().min(1),
   anchors: z.array(z.string()),
   cities: z.array(BranchCitySchema),
-  implicitAssumptions: z.array(z.string()),
+  implicitAssumptions: z.array(z.string()).default([]),
+  assumptionIds: z.array(z.string()).default([]),
+  consequences: z.array(PlanningConsequenceSchema).default([]),
+  importance: ImpactSchema.default("Medium"),
+  locked: z.boolean().default(false),
+  stale: z.boolean().default(false),
+  invalidatedByAssumptionIds: z.array(z.string()).default([]),
   revealedPreference: z.object({ category: PreferenceCategorySchema, value: z.string().min(1) }).nullable(),
   estimates: BranchEstimatesSchema,
   confidence: z.number().min(0).max(1),
@@ -1670,12 +1825,27 @@ export const ExpandRequestSchema = z.object({
   guidance: z.string().max(1000).default(""),
   learnedPreferences: z.array(LearnedPreferenceSchema).max(50).default([]),
   probeAnswers: z.array(PreferenceProbeAnswerSchema).max(30).default([]),
+  assumptions: z.array(PlanningAssumptionSchema).max(100).default([]),
   memory: UserMemorySchema.nullable().default(null),
   language: LanguageSchema.default("en")
 });
 
 export const ExpandResponseSchema = z.object({
-  nodes: z.array(PlanNodeSchema),
+  nodes: z.array(PlanNodeSchema).min(1),
+  assumptions: z.array(PlanningAssumptionSchema).default([]),
   rationale: z.string().min(1),
   trace: z.array(AgentTraceSchema)
+}).superRefine((value, context) => {
+  const assumptionIds = new Set(value.assumptions.map((assumption) => assumption.id));
+  value.nodes.forEach((node, nodeIndex) => {
+    node.assumptionIds.forEach((assumptionId) => {
+      if (!assumptionIds.has(assumptionId)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["nodes", nodeIndex, "assumptionIds"],
+          message: `Unknown planning assumption reference: ${assumptionId}`
+        });
+      }
+    });
+  });
 });

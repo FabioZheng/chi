@@ -5,6 +5,7 @@ TripTree is a Next.js + TypeScript research prototype for checkpoint-based, bran
 Instead of generating a full itinerary in one opaque step, TripTree reveals one complete candidate batch at each structural decision. The traveler can compare route directions, pacing strategies, trip styles, and logistical approaches; mark or prune branches; pause generation; add a newly realized trip rule; and continue from browser-local planning state without restarting from the initial prompt.
 
 For operating instructions, see [docs/USER_GUIDE.md](docs/USER_GUIDE.md). For the research framing and system model, see [docs/SCIENTIFIC_DOCUMENTATION.md](docs/SCIENTIFIC_DOCUMENTATION.md). For production setup, see [docs/VERCEL_DEPLOYMENT.md](docs/VERCEL_DEPLOYMENT.md).
+For the normalized assumption model, propagation rules, migration, and testing guide, see [docs/PLANNING_STATE.md](docs/PLANNING_STATE.md).
 
 ## Setup
 

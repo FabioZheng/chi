@@ -41,6 +41,11 @@ import type {
   PlanRequestSchema,
   PlanResponseSchema,
   PlanSkeletonSchema,
+  PlanningAssumptionSchema,
+  PlanningAssumptionSourceSchema,
+  PlanningAssumptionStatusSchema,
+  PlanningConfidenceSchema,
+  PlanningConsequenceSchema,
   PreferenceControlSchema,
   PreferenceInfluenceSchema,
   PreferenceProbeAnswerSchema,
@@ -94,6 +99,11 @@ export type PlanNode = z.infer<typeof PlanNodeSchema>;
 export type PlanRequest = z.infer<typeof PlanRequestSchema>;
 export type PlanSkeleton = z.infer<typeof PlanSkeletonSchema>;
 export type PlanResponse = z.infer<typeof PlanResponseSchema>;
+export type PlanningAssumption = z.infer<typeof PlanningAssumptionSchema>;
+export type PlanningAssumptionSource = z.infer<typeof PlanningAssumptionSourceSchema>;
+export type PlanningAssumptionStatus = z.infer<typeof PlanningAssumptionStatusSchema>;
+export type PlanningConfidence = z.infer<typeof PlanningConfidenceSchema>;
+export type PlanningConsequence = z.infer<typeof PlanningConsequenceSchema>;
 export type PreferenceControl = z.infer<typeof PreferenceControlSchema>;
 export type PreferenceInfluence = z.infer<typeof PreferenceInfluenceSchema>;
 export type PreferenceProbeAnswer = z.infer<typeof PreferenceProbeAnswerSchema>;

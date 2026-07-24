@@ -24,7 +24,38 @@ Return JSON with:
       "register": "local texture over headline sights",
       "anchors": ["Uffizi Gallery", "Bologna food market tour"],
       "cities": [{ "name": "Milan", "nights": 2, "lat": 45.4642, "lng": 9.19 }],
-      "implicitAssumptions": ["Assumes 2-3h train transfers are acceptable", "Assumes iconic sights matter more than local depth"],
+      "assumptions": [
+        {
+          "id": "transfer-tolerance",
+          "category": "transport",
+          "label": "Transfer tolerance",
+          "value": "Comfortable with 2-3 hour train transfers",
+          "confidence": "Medium",
+          "impact": "High",
+          "source": "model-inference",
+          "status": "active",
+          "confirmed": false,
+          "locked": false,
+          "affectedNodeIds": [],
+          "consequences": [
+            {
+              "id": "more-regional-range",
+              "label": "Enables a wider regional route with more time in transit",
+              "affectedArea": "route",
+              "affectedNodeIds": []
+            }
+          ],
+          "correctionOptions": ["Prefer short transfers", "Up to 2 hours", "Long transfers are fine"]
+        }
+      ],
+      "consequences": [
+        {
+          "id": "route-shape",
+          "label": "Uses multiple bases and schedules inter-city travel",
+          "affectedArea": "route",
+          "affectedNodeIds": []
+        }
+      ],
       "revealedPreference": { "category": "touristyLocalStyle", "value": "Choosing this branch means favoring local neighborhoods over headline sights" },
       "confidence": 0.7
     }
@@ -32,7 +63,8 @@ Return JSON with:
 }
 
 Every candidate must carry the FULL current skeleton state: cities with nights (inherited from the committed path for rhythm/anchors dimensions, re-proposed for tripShape), movementPattern, register, anchors so far, and durationDays.
-implicitAssumptions: 2-4 short lines naming what committing to this branch silently assumes — the things the traveler never said but this branch decides.
+assumptions: 1-3 structured, user-facing assumptions that directly influence this branch. Never include private reasoning, prompts, deliberation, or chain of thought. Use qualitative confidence ("Low", "Medium", "High"), a realistic impact, a friendly provenance, concrete consequences, and 2-4 correctionOptions when the value is naturally structured. Use "model-inference" unless the assumption was explicit in the user request.
+consequences: 1-4 concrete downstream planning effects of choosing this branch, such as hotel area, activity density, transfers, rest time, or day structure.
 revealedPreference: the concrete trip rule implied by choosing THIS branch over its siblings. Use the request's preference categories.
 Honor the traveler's learned preferences and probe answers. Honor "guidance" text as the traveler's live steering instruction — it overrides your own ranking.
 Never repropose anything listed in excludedTitles or resembling it.
@@ -63,6 +95,17 @@ export async function runBranchExplorerAgent(input: ExpandRequest, signal?: Abor
         guidance: input.guidance,
         learnedPreferences: input.learnedPreferences,
         probeAnswers: input.probeAnswers,
+        activePlanningAssumptions: input.assumptions
+          .filter((assumption) => assumption.status !== "rejected")
+          .map((assumption) => ({
+            id: assumption.id,
+            category: assumption.category,
+            label: assumption.label,
+            value: assumption.value,
+            status: assumption.status,
+            confirmed: assumption.confirmed,
+            locked: assumption.locked
+          })),
         outputLanguage: input.language === "zh" ? "Simplified Chinese (zh-CN)" : "English"
       },
       null,

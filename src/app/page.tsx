@@ -13,6 +13,7 @@ import {
   Globe2,
   History,
   Loader2,
+  LockKeyhole,
   Plane,
   Plus,
   RotateCcw,
@@ -20,6 +21,7 @@ import {
   Send,
   Sparkles,
   TreePalm,
+  Undo2,
   X
 } from "lucide-react";
 import { expandBranches, generateItinerary } from "@/api/client";
@@ -33,13 +35,35 @@ import {
 } from "@/components/BranchExplorer";
 import { TripItinerary } from "@/components/TripItinerary";
 import { languageNames, type Language } from "@/i18n";
+import {
+  applyAssumptionMutation,
+  assumptionMap,
+  checkpointAssumptions,
+  continuationAction,
+  counterfactualPreview,
+  createPlanningSnapshot,
+  linkAssumptionsToTree,
+  mergeAssumptions,
+  migrateLegacyPlanningState,
+  restorePlanningSnapshot,
+  setDecisionLock,
+  type AssumptionMutation,
+  type CounterfactualPreview,
+  type PlanningAssumptionMap,
+  type PlanningSnapshot
+} from "@/planning/state";
+import { PlanNodeSchema, PlanningAssumptionSchema } from "@/schemas/travel";
+import { defaultStudyCondition, parseStudyCondition } from "@/study/condition";
+import { logStudyEvent } from "@/study/logger";
 import type {
+  Assumption,
   BranchDimension,
   ConfirmedPreference,
   ConstraintWarning,
   Itinerary,
   LearnedPreference,
-  PlanNode
+  PlanNode,
+  PlanningAssumption
 } from "@/types/travel";
 
 type GenerationStatus =
@@ -72,15 +96,24 @@ type CheckpointSnapshot = {
   createdAt: string;
   tree: PlanNode[];
   rules: TripRule[];
+  assumptions: PlanningAssumptionMap;
+  favoredIds: string[];
+  selectedNodeId: string | null;
+  rationale: string;
+  itinerary: Itinerary | null;
+  warnings: ConstraintWarning[];
+  selectedOptionId: string | null;
+  view: WorkspaceView;
 };
 
 type PersistedWorkspace = {
-  version: 2;
+  version: 3;
   language: Language;
   draftPrompt: string;
   sessionPrompt: string;
   tree: PlanNode[];
   rules: TripRule[];
+  assumptions: PlanningAssumptionMap;
   favoredIds: string[];
   selectedNodeId: string | null;
   activeDimension: BranchDimension | null;
@@ -93,7 +126,35 @@ type PersistedWorkspace = {
   activity: string;
 };
 
-const STORAGE_KEY = "trip-tree:workspace:v2";
+type PendingAssumptionChange = {
+  assumptionId: string;
+  mutation: Extract<AssumptionMutation, { type: "correct" | "reject" }>;
+  preview: CounterfactualPreview;
+};
+
+type UndoPlanningState = PlanningSnapshot & {
+  rules: TripRule[];
+  favoredIds: string[];
+  activeDimension: BranchDimension | null;
+  selectedNodeId: string | null;
+  rationale: string;
+  itinerary: Itinerary | null;
+  warnings: ConstraintWarning[];
+  selectedOptionId: string | null;
+  status: GenerationStatus;
+};
+
+type RecentPlanningChange = {
+  id: string;
+  label: string;
+  from: string;
+  to: string;
+  affectedCount: number;
+  lockedCount: number;
+};
+
+const STORAGE_KEY = "trip-tree:workspace:v3";
+const LEGACY_STORAGE_KEY = "trip-tree:workspace:v2";
 const BRANCH_STAGES = ["tripShape", "rhythm", "anchors", "logistics"] as const satisfies readonly BranchDimension[];
 
 const text = {
@@ -125,6 +186,17 @@ const text = {
     progress: "decisions committed",
     checkpointTitle: "Checkpoint",
     checkpointBody: "Choose a direction, prune what does not fit, or add a trip rule before continuing.",
+    currentAssumptions: "Current planning assumptions",
+    assumptionsCheckpointBody: "Only uncertain or high-impact assumptions are surfaced here.",
+    reviewAssumption: "Review",
+    counterfactualTitle: "Preview this change",
+    likelyEffects: "Likely effects",
+    nodesAffected: "planning nodes affected",
+    applyChange: "Apply and update",
+    cancel: "Cancel",
+    planningUpdate: "Planning state updated",
+    undo: "Undo",
+    lockedPreserved: "locked decisions preserved",
     readyTitle: "The planning path is committed",
     readyBody: "The route, pace, trip style, and logistics are ready for the itinerary pass.",
     build: "Build itinerary",
@@ -180,6 +252,31 @@ const text = {
       paceLoad: "Pace load",
       tradeoff: "Main trade-off",
       assumptions: "Branch assumptions",
+      alternatives: "Alternative branches",
+      whyThisChoice: "Why this choice?",
+      decision: "Decision",
+      consequences: "Planning consequences",
+      confidence: "confidence",
+      impact: "impact",
+      provenance: {
+        "explicit-user-input": "You said",
+        "user-edit": "From your edit",
+        "checkpoint-answer": "From checkpoint",
+        "profile-memory": "From saved preference",
+        "model-inference": "Planner inference"
+      },
+      confirmAssumption: "Confirm",
+      confirmedAssumption: "Confirmed",
+      rejectAssumption: "Reject",
+      lockAssumption: "Lock assumption",
+      unlockAssumption: "Unlock assumption",
+      correctAssumption: "Change",
+      cancel: "Cancel",
+      lockDecision: "Lock decision",
+      unlockDecision: "Unlock decision",
+      decisionLocked: "Decision locked",
+      needsUpdate: "Needs update",
+      moreAssumptions: "more",
       cities: "Route shape",
       transfers: "transfers",
       hotelChanges: "hotel changes",
@@ -247,6 +344,17 @@ const text = {
     progress: "个决策已确认",
     checkpointTitle: "检查点",
     checkpointBody: "选择一个方向、剪掉不合适的分支，或在继续前添加旅行规则。",
+    currentAssumptions: "当前规划假设",
+    assumptionsCheckpointBody: "这里只显示不确定或影响较大的假设。",
+    reviewAssumption: "查看",
+    counterfactualTitle: "预览这项更改",
+    likelyEffects: "可能的影响",
+    nodesAffected: "个规划节点受影响",
+    applyChange: "应用并更新",
+    cancel: "取消",
+    planningUpdate: "规划状态已更新",
+    undo: "撤销",
+    lockedPreserved: "个锁定决策已保留",
     readyTitle: "规划路径已确认",
     readyBody: "路线、节奏、旅行风格和后勤方式已可用于生成行程。",
     build: "生成行程",
@@ -302,6 +410,31 @@ const text = {
       paceLoad: "节奏负荷",
       tradeoff: "主要取舍",
       assumptions: "分支假设",
+      alternatives: "备选分支",
+      whyThisChoice: "为什么选择它？",
+      decision: "决策",
+      consequences: "规划后果",
+      confidence: "置信度",
+      impact: "影响",
+      provenance: {
+        "explicit-user-input": "你已说明",
+        "user-edit": "来自你的编辑",
+        "checkpoint-answer": "来自检查点",
+        "profile-memory": "来自已保存偏好",
+        "model-inference": "规划器推断"
+      },
+      confirmAssumption: "确认",
+      confirmedAssumption: "已确认",
+      rejectAssumption: "拒绝",
+      lockAssumption: "锁定假设",
+      unlockAssumption: "解锁假设",
+      correctAssumption: "更改",
+      cancel: "取消",
+      lockDecision: "锁定决策",
+      unlockDecision: "解锁决策",
+      decisionLocked: "决策已锁定",
+      needsUpdate: "需要更新",
+      moreAssumptions: "更多",
       cities: "路线结构",
       transfers: "小时转移",
       hotelChanges: "次换酒店",
@@ -365,7 +498,12 @@ function affectedStageForRule(value: string): number {
   return 2;
 }
 
-function learnedPreferences(rules: TripRule[], tree: PlanNode[]): LearnedPreference[] {
+function learnedPreferences(
+  rules: TripRule[],
+  tree: PlanNode[],
+  assumptions: PlanningAssumptionMap = {},
+  favoredIds: string[] = []
+): LearnedPreference[] {
   const explicit = rules.map((rule) => ({
     id: rule.id,
     conflictId: "checkpoint-steering",
@@ -388,17 +526,81 @@ function learnedPreferences(rules: TripRule[], tree: PlanNode[]): LearnedPrefere
       source: "User" as const,
       confidence: 0.95
     }));
-  return [...explicit, ...branchChoices];
+  const softPreferences = tree
+    .filter((node) => favoredIds.includes(node.id) && node.revealedPreference)
+    .map((node) => ({
+      id: `favor-${node.id}`,
+      conflictId: "branch-favor",
+      category: node.revealedPreference!.category,
+      label: "Preferred direction",
+      value: node.revealedPreference!.value,
+      planningImpact: `Soft preference only: explore more options like ${node.title}.`,
+      source: "User" as const,
+      confidence: 0.82
+    }));
+  const activeAssumptions = Object.values(assumptions)
+    .filter((assumption) => assumption.status !== "rejected")
+    .map((assumption) => ({
+      id: assumption.id,
+      conflictId: "planning-assumption",
+      category: assumption.category,
+      label: assumption.label,
+      value: assumption.value,
+      planningImpact:
+        assumption.consequences.map((consequence) => consequence.label).join(" ") ||
+        "Use this planning assumption only where its dependency links apply.",
+      source:
+        assumption.source === "profile-memory"
+          ? ("Memory" as const)
+          : assumption.source === "model-inference"
+            ? ("Inferred" as const)
+            : ("User" as const),
+      confidence: assumption.confidence === "Low" ? 0.35 : assumption.confidence === "High" ? 0.88 : 0.65
+    }));
+  return [...explicit, ...branchChoices, ...softPreferences, ...activeAssumptions];
 }
 
-function confirmedPreferences(rules: TripRule[], tree: PlanNode[]): ConfirmedPreference[] {
-  return learnedPreferences(rules, tree).map((preference) => ({
+function confirmedPreferences(
+  rules: TripRule[],
+  tree: PlanNode[],
+  assumptions: PlanningAssumptionMap
+): ConfirmedPreference[] {
+  const confirmedIds = new Set(
+    Object.values(assumptions)
+      .filter((assumption) => assumption.confirmed || assumption.locked)
+      .map((assumption) => assumption.id)
+  );
+  return learnedPreferences(rules, tree, assumptions)
+    .filter((preference) => !assumptions[preference.id] || confirmedIds.has(preference.id))
+    .map((preference) => ({
     id: preference.id,
     category: preference.category,
     label: preference.label,
     value: preference.value,
     source: "User"
-  }));
+    }));
+}
+
+function plannerAssumptions(assumptions: PlanningAssumptionMap): Assumption[] {
+  return Object.values(assumptions)
+    .filter((assumption) => assumption.status !== "rejected")
+    .map((assumption) => ({
+      id: assumption.id,
+      category: assumption.category,
+      label: assumption.label,
+      value: assumption.value,
+      source:
+        assumption.source === "profile-memory"
+          ? "Memory"
+          : assumption.source === "model-inference"
+            ? "Inferred"
+            : "User",
+      confidence: assumption.confidence === "Low" ? 0.35 : assumption.confidence === "High" ? 0.88 : 0.65,
+      status: assumption.status === "corrected" ? "Edited" : assumption.confirmed ? "Accepted" : "Pending",
+      rationale:
+        assumption.consequences.map((consequence) => consequence.label).join(" ") ||
+        "Attached to the planning decisions it influences."
+    }));
 }
 
 function isDescendant(node: PlanNode, ancestorId: string, tree: PlanNode[]) {
@@ -435,12 +637,19 @@ function rewindTreeForRule(tree: PlanNode[], value: string, requestedStage: numb
   if (incompatible.size === siblings.length) incompatible.clear();
 
   const next = tree.map((node): PlanNode => {
-    if (node.level > level && node.status !== "pruned") return { ...node, status: "pruned" };
+    if (node.locked) return node;
+    if (node.level > level && node.status !== "pruned") {
+      return {
+        ...node,
+        status: node.status === "pinned" ? "candidate" : node.status,
+        stale: true
+      };
+    }
     if (node.level === level && (node.parentId ?? null) === parentId) {
       if (incompatible.has(node.id)) return { ...node, status: "pruned" };
-      if (node.status === "pinned") return { ...node, status: "candidate" };
+      if (node.status === "pinned") return { ...node, status: "candidate", stale: true };
     }
-    if (node.level >= level && node.status === "pinned") return { ...node, status: "candidate" };
+    if (node.level >= level && node.status === "pinned") return { ...node, status: "candidate", stale: true };
     return node;
   });
 
@@ -450,9 +659,97 @@ function rewindTreeForRule(tree: PlanNode[], value: string, requestedStage: numb
 function safeWorkspace(raw: string | null): PersistedWorkspace | null {
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as Partial<PersistedWorkspace>;
-    if (parsed.version !== 2 || !Array.isArray(parsed.tree) || !Array.isArray(parsed.rules)) return null;
-    return parsed as PersistedWorkspace;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if ((parsed.version !== 2 && parsed.version !== 3) || !Array.isArray(parsed.tree) || !Array.isArray(parsed.rules)) {
+      return null;
+    }
+
+    const parsedTree = parsed.tree.map((node) => PlanNodeSchema.safeParse(node));
+    if (parsedTree.some((result) => !result.success)) return null;
+    const tree = parsedTree.flatMap((result) => (result.success ? [result.data] : []));
+    const rawAssumptions = Array.isArray(parsed.assumptions)
+      ? parsed.assumptions
+      : parsed.assumptions && typeof parsed.assumptions === "object"
+        ? Object.values(parsed.assumptions)
+        : [];
+    const planningAssumptions = rawAssumptions.flatMap((assumption) => {
+      const result = PlanningAssumptionSchema.safeParse(assumption);
+      return result.success ? [result.data] : [];
+    });
+    const migrated = migrateLegacyPlanningState(tree, assumptionMap(planningAssumptions));
+    const rawCheckpoints = Array.isArray(parsed.checkpoints) ? parsed.checkpoints : [];
+    const checkpoints = rawCheckpoints.flatMap((checkpoint, checkpointIndex): CheckpointSnapshot[] => {
+      if (!checkpoint || typeof checkpoint !== "object") return [];
+      const value = checkpoint as Record<string, unknown>;
+      if (!Array.isArray(value.tree) || !Array.isArray(value.rules)) return [];
+      const checkpointNodes = value.tree.map((node) => PlanNodeSchema.safeParse(node));
+      if (checkpointNodes.some((result) => !result.success)) return [];
+      const checkpointTree = checkpointNodes.flatMap((result) => (result.success ? [result.data] : []));
+      const checkpointRawAssumptions =
+        value.assumptions && typeof value.assumptions === "object"
+          ? Object.values(value.assumptions)
+          : planningAssumptions;
+      const checkpointCatalog = assumptionMap(
+        checkpointRawAssumptions.flatMap((assumption) => {
+          const result = PlanningAssumptionSchema.safeParse(assumption);
+          return result.success ? [result.data] : [];
+        })
+      );
+      const checkpointPlanning = migrateLegacyPlanningState(checkpointTree, checkpointCatalog);
+      return [{
+        id: typeof value.id === "string" ? value.id : `checkpoint-restored-${checkpointIndex}`,
+        label: typeof value.label === "string" ? value.label : "Restored checkpoint",
+        dimension: BRANCH_STAGES.includes(value.dimension as BranchDimension)
+          ? (value.dimension as BranchDimension)
+          : null,
+        createdAt: typeof value.createdAt === "string" ? value.createdAt : new Date().toISOString(),
+        tree: checkpointPlanning.tree,
+        rules: value.rules as TripRule[],
+        assumptions: checkpointPlanning.assumptions,
+        favoredIds: Array.isArray(value.favoredIds) ? value.favoredIds.filter((id): id is string => typeof id === "string") : [],
+        selectedNodeId: typeof value.selectedNodeId === "string" ? value.selectedNodeId : null,
+        rationale: typeof value.rationale === "string" ? value.rationale : "",
+        itinerary: (value.itinerary as Itinerary | null) ?? null,
+        warnings: Array.isArray(value.warnings) ? (value.warnings as ConstraintWarning[]) : [],
+        selectedOptionId: typeof value.selectedOptionId === "string" ? value.selectedOptionId : null,
+        view: value.view === "itinerary" ? "itinerary" : "tree"
+      }];
+    });
+    const status: GenerationStatus = [
+      "idle",
+      "generating",
+      "checkpoint",
+      "paused",
+      "repairing",
+      "ready",
+      "planning",
+      "complete",
+      "error"
+    ].includes(parsed.status as GenerationStatus)
+      ? (parsed.status as GenerationStatus)
+      : "idle";
+
+    return {
+      version: 3,
+      language: parsed.language === "zh" ? "zh" : "en",
+      draftPrompt: typeof parsed.draftPrompt === "string" ? parsed.draftPrompt : "",
+      sessionPrompt: typeof parsed.sessionPrompt === "string" ? parsed.sessionPrompt : "",
+      tree: migrated.tree,
+      rules: parsed.rules as TripRule[],
+      assumptions: migrated.assumptions,
+      favoredIds: Array.isArray(parsed.favoredIds) ? parsed.favoredIds.filter((id): id is string => typeof id === "string") : [],
+      selectedNodeId: typeof parsed.selectedNodeId === "string" ? parsed.selectedNodeId : null,
+      activeDimension: BRANCH_STAGES.includes(parsed.activeDimension as BranchDimension)
+        ? (parsed.activeDimension as BranchDimension)
+        : null,
+      checkpoints,
+      itinerary: (parsed.itinerary as Itinerary | null) ?? null,
+      warnings: Array.isArray(parsed.warnings) ? (parsed.warnings as ConstraintWarning[]) : [],
+      selectedOptionId: typeof parsed.selectedOptionId === "string" ? parsed.selectedOptionId : null,
+      view: parsed.view === "itinerary" ? "itinerary" : "tree",
+      status: ["generating", "repairing", "planning"].includes(status) ? "paused" : status,
+      activity: typeof parsed.activity === "string" ? parsed.activity : ""
+    };
   } catch {
     return null;
   }
@@ -464,6 +761,7 @@ export default function Home() {
   const [sessionPrompt, setSessionPrompt] = useState("");
   const [tree, setTree] = useState<PlanNode[]>([]);
   const [rules, setRules] = useState<TripRule[]>([]);
+  const [assumptions, setAssumptions] = useState<PlanningAssumptionMap>({});
   const [favoredIds, setFavoredIds] = useState<string[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [activeDimension, setActiveDimension] = useState<BranchDimension | null>(null);
@@ -478,9 +776,15 @@ export default function Home() {
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
   const [view, setView] = useState<WorkspaceView>("tree");
   const [error, setError] = useState<string | null>(null);
+  const [pendingAssumptionChange, setPendingAssumptionChange] = useState<PendingAssumptionChange | null>(null);
+  const [previousPlanningState, setPreviousPlanningState] = useState<UndoPlanningState | null>(null);
+  const [recentPlanningChange, setRecentPlanningChange] = useState<RecentPlanningChange | null>(null);
+  const [focusedAssumptionId, setFocusedAssumptionId] = useState<string | null>(null);
+  const [studyCondition, setStudyCondition] = useState(defaultStudyCondition);
   const [hydrated, setHydrated] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
   const requestIdRef = useRef(0);
+  const sessionLoggedRef = useRef(false);
 
   const copy = text[language];
   const committed = useMemo(() => committedPath(tree), [tree]);
@@ -491,15 +795,19 @@ export default function Home() {
   );
   const budgetSignals = rules.filter((rule) => rule.category === "budget").map((rule) => rule.value).join(" ");
   const isWorking = status === "generating" || status === "repairing" || status === "planning";
+  const checkpointItems = useMemo(() => checkpointAssumptions(assumptions), [assumptions]);
 
   useEffect(() => {
-    const restored = safeWorkspace(window.localStorage.getItem(STORAGE_KEY));
+    const restored =
+      safeWorkspace(window.localStorage.getItem(STORAGE_KEY)) ??
+      safeWorkspace(window.localStorage.getItem(LEGACY_STORAGE_KEY));
     if (restored) {
       setLanguage(restored.language || "en");
       setDraftPrompt(restored.draftPrompt || "");
       setSessionPrompt(restored.sessionPrompt || "");
       setTree(restored.tree || []);
       setRules(restored.rules || []);
+      setAssumptions(restored.assumptions || {});
       setFavoredIds(restored.favoredIds || []);
       setSelectedNodeId(restored.selectedNodeId || null);
       setActiveDimension(restored.activeDimension || null);
@@ -511,18 +819,25 @@ export default function Home() {
       setStatus(["generating", "repairing", "planning"].includes(restored.status) ? "paused" : restored.status || "idle");
       setActivity(restored.activity || "");
     }
+    const condition = parseStudyCondition(window.location.search);
+    setStudyCondition(condition);
+    if (!sessionLoggedRef.current) {
+      sessionLoggedRef.current = true;
+      logStudyEvent(condition, "session_start", undefined, { workspaceRestored: Boolean(restored) });
+    }
     setHydrated(true);
   }, []);
 
   useEffect(() => {
     if (!hydrated) return;
     const payload: PersistedWorkspace = {
-      version: 2,
+      version: 3,
       language,
       draftPrompt,
       sessionPrompt,
       tree,
       rules,
+      assumptions,
       favoredIds,
       selectedNodeId,
       activeDimension,
@@ -534,10 +849,16 @@ export default function Home() {
       status,
       activity
     };
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+    } catch {
+      // Browser storage is a convenience; planning must continue if it is unavailable.
+    }
   }, [
     activeDimension,
     activity,
+    assumptions,
     checkpoints,
     draftPrompt,
     favoredIds,
@@ -554,14 +875,41 @@ export default function Home() {
     warnings
   ]);
 
-  function addCheckpoint(label: string, dimension: BranchDimension | null, checkpointTree: PlanNode[], checkpointRules: TripRule[]) {
+  useEffect(() => {
+    if (!recentPlanningChange) return;
+    const timeout = window.setTimeout(() => setRecentPlanningChange(null), 6500);
+    return () => window.clearTimeout(timeout);
+  }, [recentPlanningChange]);
+
+  useEffect(() => {
+    document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+  }, [language]);
+
+  function addCheckpoint(
+    label: string,
+    dimension: BranchDimension | null,
+    checkpointTree: PlanNode[],
+    checkpointRules: TripRule[],
+    checkpointAssumptionMap: PlanningAssumptionMap = assumptions
+  ) {
+    const planning = createPlanningSnapshot(checkpointTree, checkpointAssumptionMap);
     const snapshot: CheckpointSnapshot = {
       id: `checkpoint-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       label,
       dimension,
       createdAt: new Date().toISOString(),
-      tree: checkpointTree,
-      rules: checkpointRules
+      tree: planning.tree,
+      rules: checkpointRules.map((rule) => ({ ...rule })),
+      assumptions: planning.assumptions,
+      favoredIds: [...favoredIds],
+      selectedNodeId:
+        frontierNodes(checkpointTree).find((node) => node.status !== "pruned")?.id ??
+        (checkpointTree.some((node) => node.id === selectedNodeId) ? selectedNodeId : null),
+      rationale,
+      itinerary,
+      warnings: [...warnings],
+      selectedOptionId,
+      view
     };
     setCheckpoints((current) => [...current.slice(-7), snapshot]);
   }
@@ -570,6 +918,7 @@ export default function Home() {
     baseTree: PlanNode[];
     prompt: string;
     activeRules: TripRule[];
+    activeAssumptions: PlanningAssumptionMap;
     guidance?: string;
     repairing?: boolean;
   }) {
@@ -605,14 +954,16 @@ export default function Home() {
           committedPath: path,
           excludedTitles,
           guidance: options.guidance?.trim() || "",
-          learnedPreferences: learnedPreferences(options.activeRules, options.baseTree),
+          learnedPreferences: learnedPreferences(options.activeRules, options.baseTree, options.activeAssumptions, favoredIds),
           probeAnswers: [],
+          assumptions: Object.values(options.activeAssumptions),
           memory: null,
           language
         },
         controller.signal
       );
       if (requestId !== requestIdRef.current) return;
+      if (result.nodes.length === 0) throw new Error("The planner returned no usable branches for this checkpoint.");
 
       const nextTree = [
         ...options.baseTree.filter(
@@ -620,15 +971,31 @@ export default function Home() {
         ),
         ...result.nodes
       ];
+      const nextAssumptions = linkAssumptionsToTree(
+        nextTree,
+        mergeAssumptions(options.activeAssumptions, result.assumptions)
+      );
       const best = [...result.nodes].sort(
         (a, b) => branchFitScore(b, options.activeRules.map((rule) => rule.value), budgetSignals) - branchFitScore(a, options.activeRules.map((rule) => rule.value), budgetSignals)
       )[0];
       setTree(nextTree);
+      setAssumptions(nextAssumptions);
       setRationale(result.rationale);
       setSelectedNodeId(best?.id ?? null);
       setStatus("checkpoint");
       setActivity(copy.status.checkpoint);
-      addCheckpoint(`${copy.tree.stages[dimension]} ${copy.checkpointTitle.toLowerCase()}`, dimension, nextTree, options.activeRules);
+      addCheckpoint(
+        `${copy.tree.stages[dimension]} ${copy.checkpointTitle.toLowerCase()}`,
+        dimension,
+        nextTree,
+        options.activeRules,
+        nextAssumptions
+      );
+      logStudyEvent(studyCondition, "branch_expanded", dimension, {
+        branchCount: result.nodes.length,
+        assumptionCount: result.assumptions.length,
+        repairing: Boolean(options.repairing)
+      });
     } catch (caught) {
       if (caught instanceof Error && caught.name === "AbortError") return;
       if (requestId !== requestIdRef.current) return;
@@ -647,6 +1014,7 @@ export default function Home() {
     setSessionPrompt(prompt);
     setTree([]);
     setRules([]);
+    setAssumptions({});
     setFavoredIds([]);
     setSelectedNodeId(null);
     setActiveDimension("tripShape");
@@ -655,8 +1023,12 @@ export default function Home() {
     setWarnings([]);
     setSelectedOptionId(null);
     setScoreDeltas({});
+    setPreviousPlanningState(null);
+    setRecentPlanningChange(null);
+    setPendingAssumptionChange(null);
     setView("tree");
-    void expandTree({ baseTree: [], prompt, activeRules: [] });
+    logStudyEvent(studyCondition, "prompt_submitted", undefined, { promptLength: prompt.length });
+    void expandTree({ baseTree: [], prompt, activeRules: [], activeAssumptions: {} });
   }
 
   function handlePause() {
@@ -667,19 +1039,26 @@ export default function Home() {
     setStatus("paused");
     setActivity(copy.pausedActivity);
     addCheckpoint(`${copy.pause}: ${activeDimension ? copy.tree.stages[activeDimension] : copy.itinerary.finalPlan}`, activeDimension, tree, rules);
+    logStudyEvent(studyCondition, "checkpoint_paused", activeDimension ?? "itinerary", {
+      committedCount: committed.length
+    });
   }
 
   function handleResume() {
     setActivity(copy.resumedActivity);
-    if (pinnedLeaf(tree, BRANCH_STAGES.length)) {
+    logStudyEvent(studyCondition, "checkpoint_continued", activeDimension ?? "itinerary", {
+      checkpointCount: checkpoints.length
+    });
+    const action = continuationAction(tree, BRANCH_STAGES.length);
+    if (action === "build-itinerary") {
       void buildItinerary();
       return;
     }
-    if (frontier.some((node) => node.status === "candidate")) {
+    if (action === "review-checkpoint") {
       setStatus("checkpoint");
       return;
     }
-    void expandTree({ baseTree: tree, prompt: sessionPrompt, activeRules: rules });
+    void expandTree({ baseTree: tree, prompt: sessionPrompt, activeRules: rules, activeAssumptions: assumptions });
   }
 
   function ancestorIds(node: PlanNode) {
@@ -697,45 +1076,70 @@ export default function Home() {
     if (isWorking || node.status === "pruned") return;
     const pathIds = ancestorIds(node);
     const nextTree = tree.map((item): PlanNode => {
-      if (pathIds.has(item.id) && item.level <= node.level) return { ...item, status: "pinned" };
+      if (pathIds.has(item.id) && item.level <= node.level) {
+        return { ...item, status: "pinned", stale: false, invalidatedByAssumptionIds: [] };
+      }
       if (item.status === "pinned" && !pathIds.has(item.id)) return { ...item, status: "candidate" };
-      if (item.level > node.level && !isDescendant(item, node.id, tree) && item.status !== "pruned") return { ...item, status: "pruned" };
+      if (
+        item.level > node.level &&
+        !isDescendant(item, node.id, tree) &&
+        item.status !== "pruned" &&
+        !item.locked
+      ) {
+        return { ...item, status: "pruned" };
+      }
       return item;
     });
     setTree(nextTree);
     setSelectedNodeId(node.id);
     setScoreDeltas({});
     setActivity(copy.branchCommitted);
+    logStudyEvent(studyCondition, "branch_selected", node.id, {
+      dimension: node.dimension,
+      assumptionCount: node.assumptionIds.length
+    });
     if (node.level >= BRANCH_STAGES.length) {
       setActiveDimension(null);
       setStatus("ready");
       addCheckpoint(copy.readyTitle, null, nextTree, rules);
       return;
     }
-    void expandTree({ baseTree: nextTree, prompt: sessionPrompt, activeRules: rules });
+    void expandTree({ baseTree: nextTree, prompt: sessionPrompt, activeRules: rules, activeAssumptions: assumptions });
   }
 
   function handleFavor(node: PlanNode) {
     setFavoredIds((current) => (current.includes(node.id) ? current.filter((id) => id !== node.id) : [...current, node.id]));
+    logStudyEvent(studyCondition, "branch_preference_changed", node.id, {
+      favored: !favoredIds.includes(node.id),
+      dimension: node.dimension
+    });
   }
 
   function handlePrune(node: PlanNode) {
-    if (node.status === "pinned") return;
+    if (node.status === "pinned" || node.locked) return;
     const nextTree = tree.map((item): PlanNode =>
-      item.id === node.id || isDescendant(item, node.id, tree) ? { ...item, status: "pruned" } : item
+      (item.id === node.id || isDescendant(item, node.id, tree)) && !item.locked
+        ? { ...item, status: "pruned" }
+        : item
     );
     setTree(nextTree);
     setFavoredIds((current) => current.filter((id) => id !== node.id));
     setSelectedNodeId(frontierNodes(nextTree).find((item) => item.status === "candidate")?.id ?? null);
     setActivity(copy.branchPruned);
+    logStudyEvent(studyCondition, "branch_pruned", node.id, {
+      affectedNodeCount: nextTree.filter((item, index) => item.status !== tree[index]?.status).length
+    });
   }
 
   function handleRestore(node: PlanNode) {
-    const nextTree = tree.map((item): PlanNode => (item.id === node.id ? { ...item, status: "candidate" } : item));
+    const nextTree = tree.map((item): PlanNode =>
+      item.id === node.id ? { ...item, status: "candidate", stale: false, invalidatedByAssumptionIds: [] } : item
+    );
     setTree(nextTree);
     setSelectedNodeId(node.id);
     setActivity(copy.branchRestored);
     setStatus("checkpoint");
+    logStudyEvent(studyCondition, "branch_restored", node.id);
   }
 
   function applyRule(value: string, nextRules: TripRule[], activityLabel?: string) {
@@ -750,6 +1154,19 @@ export default function Home() {
         { from: currentScores[node.id] ?? branchFitScore(node, rules.map((rule) => rule.value), budgetSignals), to: branchFitScore(node, nextRules.map((rule) => rule.value), nextBudgetSignals) }
       ])
     );
+    const planning = createPlanningSnapshot(tree, assumptions);
+    setPreviousPlanningState({
+      ...planning,
+      rules: rules.map((rule) => ({ ...rule })),
+      favoredIds: [...favoredIds],
+      activeDimension,
+      selectedNodeId,
+      rationale,
+      itinerary,
+      warnings,
+      selectedOptionId,
+      status
+    });
     setRules(nextRules);
     setTree(rewound.tree);
     setScoreDeltas(deltas);
@@ -757,10 +1174,16 @@ export default function Home() {
     setWarnings([]);
     setView("tree");
     setActivity(activityLabel || copy.rescoreSummary(rewound.tree.length, rewound.prunedCount));
+    logStudyEvent(studyCondition, "regeneration_triggered", undefined, {
+      source: "trip-rule",
+      affectedNodeCount: rewound.tree.filter((node) => node.stale).length,
+      preservedLockedNodeCount: rewound.tree.filter((node) => node.locked).length
+    });
     void expandTree({
       baseTree: rewound.tree,
       prompt: sessionPrompt,
       activeRules: nextRules,
+      activeAssumptions: assumptions,
       guidance: value,
       repairing: true
     });
@@ -784,6 +1207,177 @@ export default function Home() {
     applyRule(`Reconsider without the previous rule: ${rule.value}`, rules.filter((item) => item.id !== rule.id), copy.ruleRemoved);
   }
 
+  function focusAssumption(assumption: PlanningAssumption) {
+    const affectedNode = [...tree]
+      .filter((node) => assumption.affectedNodeIds.includes(node.id) && node.status !== "pruned")
+      .sort((a, b) => b.level - a.level)[0];
+    if (affectedNode) {
+      setSelectedNodeId(affectedNode.id);
+      setFocusedAssumptionId(assumption.id);
+      setView("tree");
+    }
+    logStudyEvent(studyCondition, "assumption_viewed", assumption.id, {
+      category: assumption.category,
+      impact: assumption.impact,
+      confidence: assumption.confidence
+    });
+  }
+
+  function commitAssumptionChange(assumptionId: string, mutation: AssumptionMutation) {
+    const assumption = assumptions[assumptionId];
+    if (!assumption || isWorking) return;
+    requestIdRef.current += 1;
+    controllerRef.current?.abort();
+    controllerRef.current = null;
+
+    const planning = createPlanningSnapshot(tree, assumptions);
+    setPreviousPlanningState({
+      ...planning,
+      rules: rules.map((rule) => ({ ...rule })),
+      favoredIds: [...favoredIds],
+      activeDimension,
+      selectedNodeId,
+      rationale,
+      itinerary,
+      warnings,
+      selectedOptionId,
+      status
+    });
+
+    const result = applyAssumptionMutation(tree, assumptions, assumptionId, mutation);
+    setTree(result.tree);
+    setAssumptions(result.assumptions);
+    setPendingAssumptionChange(null);
+    setFocusedAssumptionId(assumptionId);
+    setRecentPlanningChange({
+      id: `${assumptionId}-${Date.now()}`,
+      label: assumption.label,
+      from: result.previousValue,
+      to:
+        mutation.type === "reject"
+          ? "Not used"
+          : mutation.type === "set-lock"
+            ? mutation.locked
+              ? "Locked"
+              : "Unlocked"
+            : mutation.type === "confirm"
+              ? "Confirmed"
+              : result.nextValue,
+      affectedCount: result.invalidatedNodeIds.length,
+      lockedCount: result.preservedLockedNodeIds.length
+    });
+
+    const event =
+      mutation.type === "confirm"
+        ? "assumption_confirmed"
+        : mutation.type === "correct"
+          ? "assumption_corrected"
+          : mutation.type === "reject"
+            ? "assumption_rejected"
+            : "assumption_locked";
+    logStudyEvent(studyCondition, event, assumptionId, {
+      category: assumption.category,
+      impact: assumption.impact,
+      confidence: assumption.confidence,
+      affectedNodeCount: result.invalidatedNodeIds.length,
+      preservedLockedNodeCount: result.preservedLockedNodeIds.length,
+      locked: mutation.type === "set-lock" ? mutation.locked : assumption.locked
+    });
+
+    if (mutation.type !== "correct" && mutation.type !== "reject") return;
+    setItinerary(null);
+    setWarnings([]);
+    setSelectedOptionId(null);
+    setView("tree");
+
+    const activeIds = new Set([
+      ...committedPath(tree).map((node) => node.id),
+      ...frontierNodes(tree).map((node) => node.id)
+    ]);
+    const shouldRegenerate = result.invalidatedNodeIds.some((id) => activeIds.has(id));
+    if (!shouldRegenerate || result.firstAffectedLevel === null) {
+      setStatus("checkpoint");
+      return;
+    }
+
+    const guidance =
+      mutation.type === "correct"
+        ? `${assumption.label}: ${mutation.value}`
+        : `Do not use the assumption "${assumption.label}: ${assumption.value}".`;
+    logStudyEvent(studyCondition, "regeneration_triggered", assumptionId, {
+      source: "assumption-change",
+      affectedNodeCount: result.invalidatedNodeIds.length,
+      firstAffectedLevel: result.firstAffectedLevel
+    });
+    void expandTree({
+      baseTree: result.tree,
+      prompt: sessionPrompt,
+      activeRules: rules,
+      activeAssumptions: result.assumptions,
+      guidance,
+      repairing: true
+    });
+  }
+
+  function requestAssumptionChange(assumptionId: string, mutation: AssumptionMutation) {
+    const assumption = assumptions[assumptionId];
+    if (!assumption || isWorking) return;
+    if (mutation.type === "correct" || mutation.type === "reject") {
+      const preview = counterfactualPreview(assumption, tree, mutation);
+      if (preview.requiresConfirmation) {
+        setPendingAssumptionChange({ assumptionId, mutation, preview });
+        logStudyEvent(studyCondition, "counterfactual_preview_opened", assumptionId, {
+          mutation: mutation.type,
+          affectedNodeCount: preview.affectedNodeIds.length,
+          impact: assumption.impact
+        });
+        return;
+      }
+    }
+    commitAssumptionChange(assumptionId, mutation);
+  }
+
+  function handleToggleDecisionLock(node: PlanNode) {
+    if (node.status !== "pinned" || isWorking) return;
+    const locked = !node.locked;
+    setTree((current) => setDecisionLock(current, node.id, locked));
+    setRecentPlanningChange({
+      id: `${node.id}-decision-lock-${Date.now()}`,
+      label: node.title,
+      from: node.locked ? "Locked" : "Unlocked",
+      to: locked ? "Locked" : "Unlocked",
+      affectedCount: 0,
+      lockedCount: locked ? 1 : 0
+    });
+    logStudyEvent(studyCondition, "decision_lock_changed", node.id, {
+      locked,
+      dimension: node.dimension
+    });
+  }
+
+  function handleUndoPlanningChange() {
+    if (!previousPlanningState || isWorking) return;
+    requestIdRef.current += 1;
+    controllerRef.current?.abort();
+    const restored = restorePlanningSnapshot(previousPlanningState);
+    setTree(restored.tree);
+    setAssumptions(restored.assumptions);
+    setRules(previousPlanningState.rules);
+    setFavoredIds(previousPlanningState.favoredIds);
+    setActiveDimension(previousPlanningState.activeDimension);
+    setSelectedNodeId(previousPlanningState.selectedNodeId);
+    setRationale(previousPlanningState.rationale);
+    setItinerary(previousPlanningState.itinerary);
+    setWarnings(previousPlanningState.warnings);
+    setSelectedOptionId(previousPlanningState.selectedOptionId);
+    setStatus(previousPlanningState.status);
+    setView(previousPlanningState.itinerary ? "itinerary" : "tree");
+    setPreviousPlanningState(null);
+    setRecentPlanningChange(null);
+    setPendingAssumptionChange(null);
+    logStudyEvent(studyCondition, "planning_state_restored");
+  }
+
   async function buildItinerary() {
     const leaf = pinnedLeaf(tree, BRANCH_STAGES.length);
     if (!leaf) return;
@@ -794,7 +1388,7 @@ export default function Home() {
     setStatus("planning");
     setActivity(copy.building);
     setError(null);
-    const learned = learnedPreferences(rules, tree);
+    const learned = learnedPreferences(rules, tree, assumptions, favoredIds);
     try {
       const result = await generateItinerary(
         {
@@ -802,11 +1396,11 @@ export default function Home() {
           detectedConflicts: [],
           probeAnswers: [],
           learnedPreferences: learned,
-          assumptions: [],
+          assumptions: plannerAssumptions(assumptions),
           transportAssumptions: [],
           accommodationAssumptions: [],
           costAssumptions: [],
-          confirmedPreferences: confirmedPreferences(rules, tree),
+          confirmedPreferences: confirmedPreferences(rules, tree, assumptions),
           skeleton: {
             durationDays: leaf.durationDays,
             movementPattern: leaf.movementPattern,
@@ -839,24 +1433,51 @@ export default function Home() {
   function handleRestoreCheckpoint(checkpoint: CheckpointSnapshot) {
     requestIdRef.current += 1;
     controllerRef.current?.abort();
-    setTree(checkpoint.tree);
-    setRules(checkpoint.rules);
+    const restored = restorePlanningSnapshot({
+      tree: checkpoint.tree,
+      assumptions: checkpoint.assumptions
+    });
+    setTree(restored.tree);
+    setRules(checkpoint.rules.map((rule) => ({ ...rule })));
+    setAssumptions(restored.assumptions);
+    setFavoredIds([...checkpoint.favoredIds]);
     setActiveDimension(checkpoint.dimension);
-    setSelectedNodeId(frontierNodes(checkpoint.tree).find((node) => node.status !== "pruned")?.id ?? null);
+    setSelectedNodeId(
+      checkpoint.selectedNodeId ??
+      frontierNodes(restored.tree).find((node) => node.status !== "pruned")?.id ??
+      null
+    );
+    setRationale(checkpoint.rationale);
+    setItinerary(checkpoint.itinerary);
+    setWarnings([...checkpoint.warnings]);
+    setSelectedOptionId(checkpoint.selectedOptionId);
     setScoreDeltas({});
-    setStatus(checkpoint.dimension ? "checkpoint" : "ready");
-    setView("tree");
+    setStatus(checkpoint.dimension ? "checkpoint" : checkpoint.itinerary ? "complete" : "ready");
+    setView(checkpoint.itinerary ? checkpoint.view : "tree");
+    setPreviousPlanningState(null);
+    setPendingAssumptionChange(null);
+    setRecentPlanningChange(null);
     setActivity(`${copy.restoreCheckpoint}: ${checkpoint.label}`);
+    logStudyEvent(studyCondition, "checkpoint_restored", checkpoint.id, {
+      assumptionCount: Object.keys(restored.assumptions).length,
+      nodeCount: restored.tree.length
+    });
   }
 
   function handleNewTrip() {
     requestIdRef.current += 1;
     controllerRef.current?.abort();
-    window.localStorage.removeItem(STORAGE_KEY);
+    try {
+      window.localStorage.removeItem(STORAGE_KEY);
+      window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+    } catch {
+      // Ignore storage failures; the in-memory workspace is still reset below.
+    }
     setDraftPrompt("");
     setSessionPrompt("");
     setTree([]);
     setRules([]);
+    setAssumptions({});
     setFavoredIds([]);
     setSelectedNodeId(null);
     setActiveDimension(null);
@@ -871,6 +1492,11 @@ export default function Home() {
     setSelectedOptionId(null);
     setView("tree");
     setError(null);
+    setPendingAssumptionChange(null);
+    setPreviousPlanningState(null);
+    setRecentPlanningChange(null);
+    setFocusedAssumptionId(null);
+    logStudyEvent(studyCondition, "session_reset");
   }
 
   function handleRetry() {
@@ -879,7 +1505,7 @@ export default function Home() {
       return;
     }
 
-    void expandTree({ baseTree: tree, prompt: sessionPrompt, activeRules: rules });
+    void expandTree({ baseTree: tree, prompt: sessionPrompt, activeRules: rules, activeAssumptions: assumptions });
   }
 
   const currentStagePrompt = activeDimension ? copy.tree.stagePrompts[activeDimension] : "";
@@ -898,7 +1524,7 @@ export default function Home() {
 
         {sessionPrompt ? (
           <div className="header-center">
-            <div className="generation-state" data-status={status}>
+            <div className="generation-state" data-status={status} role="status" aria-live="polite">
               {isWorking ? <Loader2 className="size-4 animate-spin" /> : status === "complete" || status === "ready" ? <Check className="size-4" /> : status === "paused" ? <CirclePause className="size-4" /> : <Plane className="size-4" />}
               <span>{statusText}</span>
             </div>
@@ -922,7 +1548,7 @@ export default function Home() {
           ) : null}
           {sessionPrompt ? (
             <details className="checkpoint-history">
-              <summary title={copy.history}>
+              <summary title={copy.history} aria-label={copy.history}>
                 <History className="size-4" />
                 <span>{checkpoints.length}</span>
                 <ChevronDown className="size-3" />
@@ -948,8 +1574,9 @@ export default function Home() {
             </select>
           </label>
           {sessionPrompt ? (
-            <button type="button" className="icon-button" title={copy.newTrip} onClick={handleNewTrip}>
+            <button type="button" className="button-secondary new-trip-button" title={copy.newTrip} onClick={handleNewTrip}>
               <Plus className="size-4" />
+              <span>{copy.newTrip}</span>
             </button>
           ) : null}
         </div>
@@ -972,6 +1599,7 @@ export default function Home() {
               value={draftPrompt}
               onChange={(event) => setDraftPrompt(event.target.value)}
               placeholder={copy.promptPlaceholder}
+              aria-label={copy.startTitle}
               rows={3}
               autoFocus
             />
@@ -1025,7 +1653,11 @@ export default function Home() {
                   <h2>{status === "ready" ? copy.readyBody : status === "paused" ? copy.pausedBody : currentStagePrompt || statusText}</h2>
                   {status === "checkpoint" && (rationale || copy.checkpointBody) ? <p>{rationale || copy.checkpointBody}</p> : null}
                 </div>
-                {status === "ready" ? (
+                {isWorking ? (
+                  <button type="button" className="button-secondary checkpoint-pause" onClick={handlePause}>
+                    <CirclePause className="size-4" /> {copy.pause}
+                  </button>
+                ) : status === "ready" ? (
                   <button type="button" className="button-primary" onClick={() => void buildItinerary()}>
                     <Route className="size-4" /> {copy.build}
                   </button>
@@ -1040,6 +1672,76 @@ export default function Home() {
                 ) : null}
               </section>
 
+              {checkpointItems.length > 0 && ["checkpoint", "paused", "ready"].includes(status) ? (
+                <section className="checkpoint-assumptions" aria-labelledby="checkpoint-assumptions-title">
+                  <div className="checkpoint-assumptions__heading">
+                    <div>
+                      <span>{copy.currentAssumptions}</span>
+                      <p id="checkpoint-assumptions-title">{copy.assumptionsCheckpointBody}</p>
+                    </div>
+                    <small>{checkpointItems.length}</small>
+                  </div>
+                  <div className="checkpoint-assumptions__list">
+                    {checkpointItems.map((assumption) => (
+                      <article key={assumption.id}>
+                        <div>
+                          <strong>{assumption.label}: {assumption.value}</strong>
+                          <span>
+                            {assumption.confidence} {copy.tree.confidence} · {assumption.impact} {copy.tree.impact} ·{" "}
+                            {copy.tree.provenance[assumption.source]}
+                          </span>
+                        </div>
+                        <div>
+                          <button
+                            type="button"
+                            disabled={isWorking || assumption.confirmed}
+                            onClick={() =>
+                              requestAssumptionChange(assumption.id, {
+                                type: "confirm",
+                                source: "checkpoint-answer"
+                              })
+                            }
+                          >
+                            <Check className="size-3.5" />
+                            {assumption.confirmed ? copy.tree.confirmedAssumption : copy.tree.confirmAssumption}
+                          </button>
+                          <button type="button" disabled={isWorking} onClick={() => focusAssumption(assumption)}>
+                            {copy.reviewAssumption}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isWorking || assumption.status === "rejected"}
+                            onClick={() =>
+                              requestAssumptionChange(assumption.id, {
+                                type: "reject",
+                                source: "checkpoint-answer"
+                              })
+                            }
+                          >
+                            {copy.tree.rejectAssumption}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isWorking || assumption.status === "rejected"}
+                            aria-pressed={assumption.locked}
+                            onClick={() =>
+                              requestAssumptionChange(assumption.id, {
+                                type: "set-lock",
+                                locked: !assumption.locked,
+                                source: "checkpoint-answer"
+                              })
+                            }
+                          >
+                            <LockKeyhole className="size-3.5" />
+                            {assumption.locked ? copy.tree.unlockAssumption : copy.tree.lockAssumption}
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
               {rules.length > 0 ? (
                 <section className="trip-rules" aria-label={copy.rules}>
                   <strong>{copy.rules}</strong>
@@ -1047,12 +1749,46 @@ export default function Home() {
                     {rules.map((rule) => (
                       <span key={rule.id}>
                         {rule.value}
-                        <button type="button" title={copy.removeRule} disabled={isWorking} onClick={() => handleRemoveRule(rule)}>
+                        <button
+                          type="button"
+                          title={copy.removeRule}
+                          aria-label={`${copy.removeRule}: ${rule.value}`}
+                          disabled={isWorking}
+                          onClick={() => handleRemoveRule(rule)}
+                        >
                           <X className="size-3" />
                         </button>
                       </span>
                     ))}
                   </div>
+                </section>
+              ) : null}
+
+              {recentPlanningChange ? (
+                <section className="planning-change" role="status" aria-live="polite">
+                  <div>
+                    <Sparkles className="size-4" />
+                    <p>
+                      <strong>{copy.planningUpdate}</strong>
+                      <span>
+                        {recentPlanningChange.label}: {recentPlanningChange.from} <ArrowRight className="size-3" />{" "}
+                        {recentPlanningChange.to}
+                      </span>
+                      {recentPlanningChange.affectedCount > 0 ? (
+                        <small>
+                          {recentPlanningChange.affectedCount} {copy.nodesAffected}
+                          {recentPlanningChange.lockedCount > 0
+                            ? ` · ${recentPlanningChange.lockedCount} ${copy.lockedPreserved}`
+                            : ""}
+                        </small>
+                      ) : null}
+                    </p>
+                  </div>
+                  {previousPlanningState ? (
+                    <button type="button" className="button-secondary" disabled={isWorking} onClick={handleUndoPlanningChange}>
+                      <Undo2 className="size-4" /> {copy.undo}
+                    </button>
+                  ) : null}
                 </section>
               ) : null}
 
@@ -1084,10 +1820,14 @@ export default function Home() {
                       rules={rules.map((rule) => rule.value)}
                       budgetSignals={budgetSignals}
                       scoreDeltas={scoreDeltas}
+                      assumptions={assumptions}
                       expanding={status === "generating" || status === "repairing"}
-                      controlsDisabled={isWorking || status === "paused"}
+                      controlsDisabled={isWorking}
                       labels={copy.tree}
-                      onSelect={(node) => setSelectedNodeId(node.id)}
+                      onSelect={(node) => {
+                        setSelectedNodeId(node.id);
+                        setFocusedAssumptionId(null);
+                      }}
                       onFavor={handleFavor}
                       onPrune={handlePrune}
                       onRestore={handleRestore}
@@ -1110,6 +1850,7 @@ export default function Home() {
                         value={steeringDraft}
                         onChange={(event) => setSteeringDraft(event.target.value)}
                         placeholder={copy.steerPlaceholder}
+                        aria-label={copy.steerTitle}
                         rows={3}
                         disabled={isWorking}
                       />
@@ -1121,16 +1862,32 @@ export default function Home() {
 
                   <BranchInspector
                     node={selectedNode}
+                    alternatives={
+                      selectedNode
+                        ? tree.filter(
+                            (node) =>
+                              node.id !== selectedNode.id &&
+                              node.level === selectedNode.level &&
+                              (node.parentId ?? null) === (selectedNode.parentId ?? null) &&
+                              node.status !== "pruned"
+                          )
+                        : []
+                    }
+                    assumptions={assumptions}
+                    focusedAssumptionId={focusedAssumptionId}
                     favored={selectedNode ? favoredIds.includes(selectedNode.id) : false}
                     rules={rules.map((rule) => rule.value)}
                     budgetSignals={budgetSignals}
                     scoreDelta={selectedNode ? scoreDeltas[selectedNode.id] : undefined}
-                    controlsDisabled={isWorking || status === "paused"}
+                    controlsDisabled={isWorking}
                     labels={copy.tree}
                     onFavor={handleFavor}
                     onPrune={handlePrune}
                     onRestore={handleRestore}
                     onContinue={handleContinue}
+                    onAssumptionChange={requestAssumptionChange}
+                    onAssumptionViewed={focusAssumption}
+                    onToggleDecisionLock={handleToggleDecisionLock}
                   />
                 </aside>
               </div>
@@ -1138,6 +1895,57 @@ export default function Home() {
           )}
         </>
       )}
+      {pendingAssumptionChange ? (
+        <div className="counterfactual-backdrop" role="presentation">
+          <section
+            className="counterfactual-preview"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="counterfactual-title"
+          >
+            <div className="counterfactual-preview__heading">
+              <span><Sparkles className="size-4" /> {copy.counterfactualTitle}</span>
+              <button
+                type="button"
+                aria-label={copy.cancel}
+                onClick={() => setPendingAssumptionChange(null)}
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            <h2 id="counterfactual-title">{pendingAssumptionChange.preview.title}</h2>
+            <p>
+              {pendingAssumptionChange.preview.affectedNodeIds.length} {copy.nodesAffected}
+            </p>
+            <h3>{copy.likelyEffects}</h3>
+            <ul>
+              {pendingAssumptionChange.preview.effects.map((effect) => (
+                <li key={effect}>
+                  <ChevronDown className="size-3.5" />
+                  {effect}
+                </li>
+              ))}
+            </ul>
+            <div>
+              <button type="button" className="button-secondary" onClick={() => setPendingAssumptionChange(null)}>
+                {copy.cancel}
+              </button>
+              <button
+                type="button"
+                className="button-primary"
+                onClick={() =>
+                  commitAssumptionChange(
+                    pendingAssumptionChange.assumptionId,
+                    pendingAssumptionChange.mutation
+                  )
+                }
+              >
+                {copy.applyChange} <ArrowRight className="size-4" />
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

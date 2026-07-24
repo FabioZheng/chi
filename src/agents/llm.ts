@@ -50,6 +50,12 @@ const JSON_RULES = [
   "Every array item must include a stable id."
 ].join(" ");
 
+const JSON_REPAIR_RULES = [
+  "The previous response could not be parsed or did not match the required structure.",
+  "Try once more with one complete JSON object that satisfies every requested field and enum.",
+  "Do not add an explanation or markdown."
+].join(" ");
+
 const PROVIDER_TIMEOUT_MS = 105_000;
 
 function resolveProvider(): Provider {
@@ -145,6 +151,20 @@ function extractMessageContent(payload: unknown): string {
   throw new AgentError("The provider returned an unsupported message content shape.", "PROVIDER");
 }
 
+export function parseAndValidateAgentJson<T>(content: string, schema: z.ZodType<T>, agentName: string): T {
+  const rawJson = parseJsonObject(content);
+  const validated = schema.safeParse(rawJson);
+
+  if (!validated.success) {
+    throw new AgentError(
+      `${agentName} returned JSON that failed validation: ${validated.error.message}`,
+      "VALIDATION"
+    );
+  }
+
+  return validated.data;
+}
+
 export async function callJsonAgent<T>({
   agentName,
   schema,
@@ -176,13 +196,22 @@ export async function callJsonAgent<T>({
     signal?.addEventListener("abort", abortFromCaller, { once: true });
   }
 
-  try {
+  const runAttempt = async (repair: boolean): Promise<T> => {
+    const attemptMessages = repair
+      ? [
+          {
+            ...messages[0],
+            content: `${messages[0].content}\n\n${JSON_REPAIR_RULES}`
+          },
+          messages[1]
+        ]
+      : messages;
     const response = await fetch(config.url, {
       method: "POST",
       headers: config.headers,
       body: JSON.stringify({
         model: config.model,
-        messages,
+        messages: attemptMessages,
         temperature,
         response_format: { type: "json_object" }
       }),
@@ -196,17 +225,19 @@ export async function callJsonAgent<T>({
 
     const payload = await response.json();
     const content = extractMessageContent(payload);
-    const rawJson = parseJsonObject(content);
-    const validated = schema.safeParse(rawJson);
+    return parseAndValidateAgentJson(content, schema, agentName);
+  };
 
-    if (!validated.success) {
-      throw new AgentError(
-        `${agentName} returned JSON that failed validation: ${validated.error.message}`,
-        "VALIDATION"
-      );
+  try {
+    try {
+      return await runAttempt(false);
+    } catch (error) {
+      if (error instanceof AgentError && (error.code === "PARSE" || error.code === "VALIDATION")) {
+        return await runAttempt(true);
+      }
+
+      throw error;
     }
-
-    return validated.data;
   } catch (error) {
     if (error instanceof AgentError) {
       throw error;

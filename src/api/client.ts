@@ -1,3 +1,10 @@
+import { z } from "zod";
+import {
+  AnalyzeResponseSchema,
+  ExpandResponseSchema,
+  PlanResponseSchema,
+  PreferenceProbeResponseSchema
+} from "@/schemas/travel";
 import type {
   AnalyzeRequest,
   AnalyzeResponse,
@@ -16,6 +23,7 @@ const PLAN_REQUEST_TIMEOUT_MS = 270_000;
 async function postJson<ResponseBody>(
   url: string,
   payload: unknown,
+  schema: z.ZodType<ResponseBody>,
   timeoutMs = REQUEST_TIMEOUT_MS,
   signal?: AbortSignal
 ): Promise<ResponseBody> {
@@ -47,7 +55,7 @@ async function postJson<ResponseBody>(
       throw new Error(detail.error || response.statusText);
     }
 
-    return (await response.json()) as ResponseBody;
+    return schema.parse(await response.json());
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       if (signal?.aborted) {
@@ -65,17 +73,22 @@ async function postJson<ResponseBody>(
 }
 
 export function analyzePreferences(payload: AnalyzeRequest) {
-  return postJson<AnalyzeResponse>("/api/analyze", payload);
+  return postJson<AnalyzeResponse>("/api/analyze", payload, AnalyzeResponseSchema);
 }
 
 export function learnPreferences(payload: PreferenceProbeRequest) {
-  return postJson<PreferenceProbeResponse>("/api/probe", payload, PROBE_REQUEST_TIMEOUT_MS);
+  return postJson<PreferenceProbeResponse>(
+    "/api/probe",
+    payload,
+    PreferenceProbeResponseSchema,
+    PROBE_REQUEST_TIMEOUT_MS
+  );
 }
 
 export function generateItinerary(payload: PlanRequest, signal?: AbortSignal) {
-  return postJson<PlanResponse>("/api/plan", payload, PLAN_REQUEST_TIMEOUT_MS, signal);
+  return postJson<PlanResponse>("/api/plan", payload, PlanResponseSchema, PLAN_REQUEST_TIMEOUT_MS, signal);
 }
 
 export function expandBranches(payload: ExpandRequest, signal?: AbortSignal) {
-  return postJson<ExpandResponse>("/api/expand", payload, REQUEST_TIMEOUT_MS, signal);
+  return postJson<ExpandResponse>("/api/expand", payload, ExpandResponseSchema, REQUEST_TIMEOUT_MS, signal);
 }

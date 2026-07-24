@@ -1,23 +1,44 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
-  AlertTriangle,
   ArrowRight,
   Check,
   ChevronRight,
   CircleDollarSign,
+  Compass,
   GitBranch,
   Gauge,
   Hotel,
+  Landmark,
+  LockKeyhole,
   MapPin,
+  Mountain,
   RotateCcw,
   Sparkles,
   Star,
-  Trash2
+  Sun,
+  TrainFront,
+  Trash2,
+  UnlockKeyhole,
+  UtensilsCrossed,
+  WavesHorizontal,
+  Zap,
+  type LucideIcon
 } from "lucide-react";
 import { branchBudgetRisk } from "@/agents/branchScoring";
-import type { BranchDimension, PlanNode } from "@/types/travel";
+import {
+  assumptionsForNode,
+  correctionOptionsFor,
+  type AssumptionMutation,
+  type PlanningAssumptionMap
+} from "@/planning/state";
+import type {
+  BranchDimension,
+  PlanNode,
+  PlanningAssumption,
+  PlanningAssumptionSource
+} from "@/types/travel";
 
 export type BranchTreeLabels = {
   root: string;
@@ -35,6 +56,25 @@ export type BranchTreeLabels = {
   paceLoad: string;
   tradeoff: string;
   assumptions: string;
+  alternatives: string;
+  whyThisChoice: string;
+  decision: string;
+  consequences: string;
+  confidence: string;
+  impact: string;
+  provenance: Record<PlanningAssumptionSource, string>;
+  confirmAssumption: string;
+  confirmedAssumption: string;
+  rejectAssumption: string;
+  lockAssumption: string;
+  unlockAssumption: string;
+  correctAssumption: string;
+  cancel: string;
+  lockDecision: string;
+  unlockDecision: string;
+  decisionLocked: string;
+  needsUpdate: string;
+  moreAssumptions: string;
   cities: string;
   transfers: string;
   hotelChanges: string;
@@ -78,6 +118,7 @@ type BranchExplorerProps = {
   rules: string[];
   budgetSignals: string;
   scoreDeltas: Record<string, ScoreDelta>;
+  assumptions: PlanningAssumptionMap;
   expanding: boolean;
   controlsDisabled: boolean;
   labels: BranchTreeLabels;
@@ -90,6 +131,9 @@ type BranchExplorerProps = {
 
 type BranchInspectorProps = {
   node: PlanNode | null;
+  alternatives: PlanNode[];
+  assumptions: PlanningAssumptionMap;
+  focusedAssumptionId: string | null;
   favored: boolean;
   rules: string[];
   budgetSignals: string;
@@ -100,6 +144,9 @@ type BranchInspectorProps = {
   onPrune: (node: PlanNode) => void;
   onRestore: (node: PlanNode) => void;
   onContinue: (node: PlanNode) => void;
+  onAssumptionChange: (assumptionId: string, mutation: AssumptionMutation) => void;
+  onAssumptionViewed: (assumption: PlanningAssumption) => void;
+  onToggleDecisionLock: (node: PlanNode) => void;
 };
 
 const riskTone = {
@@ -108,8 +155,131 @@ const riskTone = {
   High: "branch-metric--risk"
 } as const;
 
+type TreeEdge = {
+  id: string;
+  d: string;
+  tone: "committed" | "pruned" | "candidate";
+  endX: number;
+  endY: number;
+};
+
+function computeTreeEdges(container: HTMLElement, tree: PlanNode[]): TreeEdge[] {
+  const cardById = new Map<string, HTMLElement>();
+  container.querySelectorAll<HTMLElement>("[data-node-id]").forEach((element) => {
+    if (element.dataset.nodeId) cardById.set(element.dataset.nodeId, element);
+  });
+  const origin = container.getBoundingClientRect();
+  const edges: TreeEdge[] = [];
+
+  for (const node of tree) {
+    const child = cardById.get(node.id);
+    const parent = cardById.get(node.parentId ?? "root");
+    if (!child || !parent) continue;
+    const parentRect = parent.getBoundingClientRect();
+    const childRect = child.getBoundingClientRect();
+    const startX = parentRect.right - origin.left;
+    const startY = parentRect.top + parentRect.height / 2 - origin.top;
+    const endX = childRect.left - origin.left;
+    const endY = childRect.top + Math.min(childRect.height / 2, 36) - origin.top;
+    const bend = Math.max(18, (endX - startX) / 2);
+    edges.push({
+      id: node.id,
+      d: `M ${startX} ${startY} C ${startX + bend} ${startY}, ${endX - bend} ${endY}, ${endX} ${endY}`,
+      tone: node.status === "pinned" ? "committed" : node.status === "pruned" ? "pruned" : "candidate",
+      endX,
+      endY
+    });
+  }
+
+  return edges;
+}
+
 function normalized(value: string) {
   return value.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ");
+}
+
+type BranchVisual = { tone: string; Icon: LucideIcon };
+
+const branchVisualThemes: ReadonlyArray<BranchVisual & { keywords: readonly string[] }> = [
+  { tone: "food", Icon: UtensilsCrossed, keywords: ["food", "culinary", "wine", "market", "cuisine", "taste", "gastro", "美食", "餐", "酒庄"] },
+  { tone: "sea", Icon: WavesHorizontal, keywords: ["coast", "beach", "island", "sea", "seaside", "riviera", "amalfi", "sorrento", "cinque", "海", "岛"] },
+  { tone: "nature", Icon: Mountain, keywords: ["lake", "alps", "mountain", "dolomit", "nature", "outdoor", "scenic", "garda", "hik", "湖", "山", "自然", "户外"] },
+  { tone: "culture", Icon: Landmark, keywords: ["art", "museum", "history", "historic", "heritage", "culture", "architec", "iconic", "renaissance", "艺术", "历史", "文化", "博物馆"] },
+  { tone: "calm", Icon: Sun, keywords: ["relax", "slow", "leisure", "immersion", "unhurried", "calm", "rest", "recovery", "放松", "慢", "悠闲"] },
+  { tone: "active", Icon: Zap, keywords: ["fast", "packed", "highlight", "active", "energetic", "快", "紧凑", "精华"] },
+  { tone: "transit", Icon: TrainFront, keywords: ["train", "rail", "transfer", "logistics", "hotel", "base", "hub", "point-to-point", "火车", "酒店", "住宿", "中转"] }
+];
+
+const branchVisualFallbacks: ReadonlyArray<BranchVisual> = [
+  { tone: "route", Icon: Compass },
+  { tone: "active", Icon: Gauge },
+  { tone: "culture", Icon: Sparkles },
+  { tone: "transit", Icon: Hotel }
+];
+
+function branchVisual(node: PlanNode): BranchVisual {
+  if (node.level === 2) {
+    if (node.estimates.pace === "Relaxed") return { tone: "calm", Icon: Sun };
+    if (node.estimates.pace === "Packed") return { tone: "active", Icon: Zap };
+    return { tone: "route", Icon: Gauge };
+  }
+  if (node.level === 4) {
+    return { tone: "transit", Icon: node.estimates.moveCount <= 1 ? Hotel : TrainFront };
+  }
+  const text = normalized([node.title, node.summary, node.register, node.movementPattern, ...node.anchors].join(" "));
+  const match = branchVisualThemes.find((theme) => theme.keywords.some((keyword) => text.includes(keyword)));
+  return match ?? branchVisualFallbacks[Math.min(branchVisualFallbacks.length - 1, Math.max(0, node.level - 1))];
+}
+
+/*
+ * Decorative thumbnails only: city photos come from the free, keyless Wikipedia
+ * summary endpoint and fall back to the icon medallion when unavailable.
+ */
+const cityImageCache = new Map<string, Promise<string | null>>();
+
+function cityImageUrl(city: string): Promise<string | null> {
+  const key = city.trim();
+  const cached = cityImageCache.get(key);
+  if (cached) return cached;
+  const request = fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(key)}`)
+    .then((response) => (response.ok ? (response.json() as Promise<{ thumbnail?: { source?: unknown } }>) : null))
+    .then((data) => (typeof data?.thumbnail?.source === "string" ? data.thumbnail.source : null))
+    .catch(() => null);
+  cityImageCache.set(key, request);
+  return request;
+}
+
+function nodeThumbCity(node: PlanNode): string | null {
+  if (node.cities.length === 0) return null;
+  let hash = 0;
+  for (let index = 0; index < node.id.length; index += 1) hash = (hash * 31 + node.id.charCodeAt(index)) | 0;
+  return node.cities[Math.abs(hash) % node.cities.length]?.name ?? null;
+}
+
+function BranchThumb({ node }: { node: PlanNode }) {
+  const visual = branchVisual(node);
+  const city = nodeThumbCity(node);
+  const [image, setImage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!city) return;
+    let cancelled = false;
+    void cityImageUrl(city).then((url) => {
+      if (!cancelled) setImage(url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [city]);
+
+  return (
+    <i className={`tree-node__thumb tree-node__thumb--${visual.tone}`} aria-hidden="true">
+      <visual.Icon className="size-5" />
+      {image ? (
+        <img src={image} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setImage(null)} />
+      ) : null}
+    </i>
+  );
 }
 
 function includesAny(haystack: string, needles: string[]) {
@@ -195,6 +365,8 @@ export function annotationsForBranch(node: PlanNode, rules: string[], budgetSign
 }
 
 function stateLabel(node: PlanNode, favored: boolean, labels: BranchTreeLabels) {
+  if (node.stale) return labels.needsUpdate;
+  if (node.locked) return labels.decisionLocked;
   if (node.status === "pinned") return labels.committed;
   if (node.status === "pruned") return labels.pruned;
   if (favored) return labels.favored;
@@ -206,6 +378,7 @@ function BranchNodeCard({
   active,
   selected,
   favored,
+  assumptions,
   rules,
   budgetSignals,
   scoreDelta,
@@ -221,6 +394,7 @@ function BranchNodeCard({
   active: boolean;
   selected: boolean;
   favored: boolean;
+  assumptions: PlanningAssumptionMap;
   rules: string[];
   budgetSignals: string;
   scoreDelta?: ScoreDelta;
@@ -235,12 +409,17 @@ function BranchNodeCard({
   const annotations = annotationsForBranch(node, rules, budgetSignals);
   const pruned = node.status === "pruned";
   const pinned = node.status === "pinned";
+  const nodeAssumptions = assumptionsForNode(node, assumptions);
 
   return (
     <article
+      data-node-id={node.id}
+      role="treeitem"
       className={`tree-node ${selected ? "tree-node--selected" : ""} ${pinned ? "tree-node--pinned" : ""} ${
         pruned ? "tree-node--pruned" : ""
-      } ${!active && !pinned ? "tree-node--inactive" : ""}`}
+      } ${node.stale ? "tree-node--stale" : ""} ${node.locked ? "tree-node--locked" : ""} ${
+        !active && !pinned ? "tree-node--inactive" : ""
+      }`}
     >
       <button type="button" className="tree-node__body" onClick={() => onSelect(node)} aria-pressed={selected}>
         <div className="flex min-w-0 items-center justify-between gap-2">
@@ -250,10 +429,17 @@ function BranchNodeCard({
           </span>
           <span className="tree-node__score">{annotations.fit}%</span>
         </div>
-        <h3>{node.title}</h3>
-        {pruned ? null : (
+        {pruned ? (
+          <h3>{node.title}</h3>
+        ) : (
           <>
-            <p className="tree-node__summary">{node.summary}</p>
+            <div className="tree-node__lead">
+              <BranchThumb node={node} />
+              <div>
+                <h3>{node.title}</h3>
+                <p className="tree-node__summary">{node.summary}</p>
+              </div>
+            </div>
             <div className="tree-node__route">
               {node.cities.slice(0, 4).map((city, index) => (
                 <span key={`${node.id}-${city.name}-${index}`}>
@@ -270,6 +456,33 @@ function BranchNodeCard({
                 <Gauge className="size-3" /> {node.estimates.pace}
               </span>
             </div>
+            {nodeAssumptions.length > 0 ? (
+              <div className="tree-node__assumptions" aria-label={labels.assumptions}>
+                {nodeAssumptions.slice(0, 2).map((assumption) => (
+                  <span
+                    key={assumption.id}
+                    className={
+                      assumption.impact === "High" && assumption.confidence === "Low"
+                        ? "assumption-chip assumption-chip--attention"
+                        : "assumption-chip"
+                    }
+                  >
+                    {assumption.locked ? <LockKeyhole className="size-3" /> : null}
+                    {assumption.label}: {assumption.value}
+                  </span>
+                ))}
+                {nodeAssumptions.length > 2 ? (
+                  <span className="assumption-chip assumption-chip--more">
+                    +{nodeAssumptions.length - 2} {labels.moreAssumptions}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+            {nodeAssumptions.length > 0 || node.consequences.length > 0 ? (
+              <p className="tree-node__why">
+                {labels.whyThisChoice} <ChevronRight className="size-3" />
+              </p>
+            ) : null}
             {scoreDelta && scoreDelta.from !== scoreDelta.to ? (
               <p className="tree-node__delta">
                 <Sparkles className="size-3" /> {labels.scoreChange}: {scoreDelta.from} <ArrowRight className="size-3" /> {scoreDelta.to}
@@ -281,7 +494,13 @@ function BranchNodeCard({
 
       <div className="tree-node__actions">
         {pruned ? (
-          <button type="button" title={labels.restore} disabled={controlsDisabled} onClick={() => onRestore(node)}>
+          <button
+            type="button"
+            title={labels.restore}
+            aria-label={`${labels.restore}: ${node.title}`}
+            disabled={controlsDisabled}
+            onClick={() => onRestore(node)}
+          >
             <RotateCcw className="size-4" />
           </button>
         ) : (
@@ -289,6 +508,7 @@ function BranchNodeCard({
             <button
               type="button"
               title={favored ? labels.unfavor : labels.favor}
+              aria-label={`${favored ? labels.unfavor : labels.favor}: ${node.title}`}
               aria-pressed={favored}
               disabled={controlsDisabled || pinned}
               onClick={() => onFavor(node)}
@@ -296,7 +516,13 @@ function BranchNodeCard({
             >
               <Star className={`size-4 ${favored ? "fill-current" : ""}`} />
             </button>
-            <button type="button" title={labels.prune} disabled={controlsDisabled || pinned} onClick={() => onPrune(node)}>
+            <button
+              type="button"
+              title={labels.prune}
+              aria-label={`${labels.prune}: ${node.title}`}
+              disabled={controlsDisabled || pinned || node.locked}
+              onClick={() => onPrune(node)}
+            >
               <Trash2 className="size-4" />
             </button>
             {active && !pinned ? (
@@ -322,6 +548,7 @@ export function BranchExplorer({
   rules,
   budgetSignals,
   scoreDeltas,
+  assumptions,
   expanding,
   controlsDisabled,
   labels,
@@ -334,15 +561,46 @@ export function BranchExplorer({
   const committed = committedPath(tree);
   const activeParentId = committed[committed.length - 1]?.id ?? null;
   const parentById = new Map(tree.map((node) => [node.id, node]));
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [edges, setEdges] = useState<TreeEdge[]>([]);
+
+  useLayoutEffect(() => {
+    const container = canvasRef.current;
+    if (!container) return;
+    const update = () => setEdges(computeTreeEdges(container, tree));
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [tree, expanding, scoreDeltas]);
 
   return (
-    <div className="planning-tree" aria-label={labels.liveTree}>
+    <div
+      className="planning-tree"
+      aria-label={labels.liveTree}
+      aria-busy={expanding}
+      role="tree"
+      ref={canvasRef}
+    >
+      <svg className="tree-connections" aria-hidden="true">
+        {edges.map((edge) => (
+          <path key={edge.id} className={`tree-connection tree-connection--${edge.tone}`} d={edge.d} />
+        ))}
+        {edges
+          .filter((edge) => edge.tone === "committed")
+          .map((edge) => (
+            <g key={`${edge.id}-check`} className="tree-connection__check" transform={`translate(${edge.endX - 6} ${edge.endY})`}>
+              <circle r="7" />
+              <path d="M -2.8 0.2 L -0.8 2.2 L 3 -2.2" />
+            </g>
+          ))}
+      </svg>
       <section className="tree-stage tree-stage--root">
         <div className="tree-stage__header">
           <span>00</span>
           <strong>{labels.root}</strong>
         </div>
-        <div className="tree-root-node">
+        <div className="tree-root-node" data-node-id="root">
           <GitBranch className="size-5" />
           <p>{prompt}</p>
         </div>
@@ -378,6 +636,7 @@ export function BranchExplorer({
                       active={onActiveFrontier}
                       selected={selectedNodeId === node.id}
                       favored={favoredIds.includes(node.id)}
+                      assumptions={assumptions}
                       rules={rules}
                       budgetSignals={budgetSignals}
                       scoreDelta={scoreDeltas[node.id]}
@@ -423,8 +682,139 @@ function AnnotationRow({ icon, label, value, agent, tone }: { icon: ReactNode; l
   );
 }
 
+function AssumptionControlCard({
+  assumption,
+  focused,
+  controlsDisabled,
+  labels,
+  onChange,
+  onViewed
+}: {
+  assumption: PlanningAssumption;
+  focused: boolean;
+  controlsDisabled: boolean;
+  labels: BranchTreeLabels;
+  onChange: (assumptionId: string, mutation: AssumptionMutation) => void;
+  onViewed: (assumption: PlanningAssumption) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(assumption.value);
+  const options = correctionOptionsFor(assumption);
+  const rejected = assumption.status === "rejected";
+
+  useEffect(() => setDraft(assumption.value), [assumption.value]);
+
+  return (
+    <article
+      className={`planning-assumption ${focused ? "planning-assumption--focused" : ""} ${
+        rejected ? "planning-assumption--rejected" : ""
+      }`}
+      onFocus={() => onViewed(assumption)}
+    >
+      <div className="planning-assumption__heading">
+        <div>
+          <strong>{assumption.label}</strong>
+          <span>{labels.provenance[assumption.source]}</span>
+        </div>
+        <div className="planning-assumption__flags">
+          <span>{assumption.confidence} {labels.confidence}</span>
+          <span>{assumption.impact} {labels.impact}</span>
+        </div>
+      </div>
+      <p className="planning-assumption__value">{assumption.value}</p>
+      {assumption.consequences.length > 0 ? (
+        <ul className="planning-assumption__effects">
+          {assumption.consequences.slice(0, 3).map((consequence) => (
+            <li key={consequence.id}>
+              <ChevronRight className="size-3" />
+              {consequence.label}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {editing && !rejected ? (
+        <form
+          className="planning-assumption__editor"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (draft.trim() && draft.trim() !== assumption.value) {
+              onChange(assumption.id, { type: "correct", value: draft.trim(), source: "user-edit" });
+            }
+            setEditing(false);
+          }}
+        >
+          {options.length > 0 ? (
+            <select
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              aria-label={`${labels.correctAssumption}: ${assumption.label}`}
+            >
+              {!options.includes(assumption.value) ? <option value={assumption.value}>{assumption.value}</option> : null}
+              {options.map((option) => <option key={option} value={option}>{option}</option>)}
+            </select>
+          ) : (
+            <input
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              aria-label={`${labels.correctAssumption}: ${assumption.label}`}
+            />
+          )}
+          <div>
+            <button type="button" className="button-secondary" onClick={() => setEditing(false)}>
+              {labels.cancel}
+            </button>
+            <button type="submit" className="button-primary" disabled={!draft.trim() || draft.trim() === assumption.value}>
+              {labels.correctAssumption}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="planning-assumption__actions">
+          <button
+            type="button"
+            disabled={controlsDisabled || assumption.confirmed || rejected}
+            onClick={() => onChange(assumption.id, { type: "confirm", source: "user-edit" })}
+          >
+            <Check className="size-3.5" />
+            {assumption.confirmed ? labels.confirmedAssumption : labels.confirmAssumption}
+          </button>
+          <button type="button" disabled={controlsDisabled || rejected} onClick={() => setEditing(true)}>
+            {labels.correctAssumption}
+          </button>
+          <button
+            type="button"
+            disabled={controlsDisabled || rejected}
+            onClick={() => onChange(assumption.id, { type: "reject", source: "user-edit" })}
+          >
+            {labels.rejectAssumption}
+          </button>
+          <button
+            type="button"
+            disabled={controlsDisabled || rejected}
+            aria-pressed={assumption.locked}
+            onClick={() =>
+              onChange(assumption.id, {
+                type: "set-lock",
+                locked: !assumption.locked,
+                source: "user-edit"
+              })
+            }
+          >
+            {assumption.locked ? <UnlockKeyhole className="size-3.5" /> : <LockKeyhole className="size-3.5" />}
+            {assumption.locked ? labels.unlockAssumption : labels.lockAssumption}
+          </button>
+        </div>
+      )}
+    </article>
+  );
+}
+
 export function BranchInspector({
   node,
+  alternatives,
+  assumptions,
+  focusedAssumptionId,
   favored,
   rules,
   budgetSignals,
@@ -434,7 +824,10 @@ export function BranchInspector({
   onFavor,
   onPrune,
   onRestore,
-  onContinue
+  onContinue,
+  onAssumptionChange,
+  onAssumptionViewed,
+  onToggleDecisionLock
 }: BranchInspectorProps) {
   if (!node) {
     return (
@@ -449,10 +842,12 @@ export function BranchInspector({
   const annotations = annotationsForBranch(node, rules, budgetSignals);
   const isPruned = node.status === "pruned";
   const isPinned = node.status === "pinned";
+  const nodeAssumptions = assumptionsForNode(node, assumptions, true);
 
   return (
     <div className="branch-inspector">
       <div className="branch-inspector__heading">
+        <BranchThumb node={node} />
         <span>{stateLabel(node, favored, labels)}</span>
         <h2>{node.title}</h2>
         <p>{node.summary}</p>
@@ -504,24 +899,70 @@ export function BranchInspector({
         </p>
       </section>
 
-      <section className="branch-inspector__section">
-        <h3>{labels.tradeoff}</h3>
-        <p>{annotations.tradeoff}</p>
-      </section>
-
-      {node.implicitAssumptions.length > 0 ? (
-        <section className="branch-inspector__section">
-          <h3>{labels.assumptions}</h3>
-          <ul>
-            {node.implicitAssumptions.slice(0, 4).map((assumption) => (
-              <li key={assumption}>
-                <AlertTriangle className="size-3.5" />
-                {assumption}
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
+      <details
+        className="branch-inspector__why"
+        open={Boolean(focusedAssumptionId || node.stale) || undefined}
+        onToggle={(event) => {
+          if (event.currentTarget.open && nodeAssumptions[0]) onAssumptionViewed(nodeAssumptions[0]);
+        }}
+      >
+        <summary>
+          <span>{labels.whyThisChoice}</span>
+          <ChevronRight className="size-4" />
+        </summary>
+        <div className="branch-inspector__why-content">
+          <section>
+            <h3>{labels.decision}</h3>
+            <strong>{node.title}</strong>
+            <p>{node.summary}</p>
+          </section>
+          <section>
+            <h3>{labels.tradeoff}</h3>
+            <p>{annotations.tradeoff}</p>
+          </section>
+          {nodeAssumptions.length > 0 ? (
+            <section>
+              <h3>{labels.assumptions}</h3>
+              <div className="planning-assumption-list">
+                {nodeAssumptions.map((assumption) => (
+                  <AssumptionControlCard
+                    key={assumption.id}
+                    assumption={assumption}
+                    focused={focusedAssumptionId === assumption.id}
+                    controlsDisabled={controlsDisabled}
+                    labels={labels}
+                    onChange={onAssumptionChange}
+                    onViewed={onAssumptionViewed}
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {node.consequences.length > 0 ? (
+            <section>
+              <h3>{labels.consequences}</h3>
+              <ul className="decision-consequences">
+                {node.consequences.map((consequence) => (
+                  <li key={consequence.id}>
+                    <ChevronRight className="size-3.5" />
+                    <span>{consequence.label}<small>{consequence.affectedArea}</small></span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+          {alternatives.length > 0 ? (
+            <section>
+              <h3>{labels.alternatives}</h3>
+              <div className="decision-alternatives">
+                {alternatives.slice(0, 3).map((alternative) => (
+                  <span key={alternative.id}>{alternative.title}</span>
+                ))}
+              </div>
+            </section>
+          ) : null}
+        </div>
+      </details>
 
       <div className="branch-inspector__actions">
         {isPruned ? (
@@ -533,12 +974,24 @@ export function BranchInspector({
             <button type="button" className="button-secondary" disabled={controlsDisabled || isPinned} onClick={() => onFavor(node)}>
               <Star className={`size-4 ${favored ? "fill-current" : ""}`} /> {favored ? labels.unfavor : labels.favor}
             </button>
-            <button type="button" className="button-danger" disabled={controlsDisabled || isPinned} onClick={() => onPrune(node)}>
+            <button type="button" className="button-danger" disabled={controlsDisabled || isPinned || node.locked} onClick={() => onPrune(node)}>
               <Trash2 className="size-4" /> {labels.prune}
             </button>
             {!isPinned ? (
               <button type="button" className="button-primary" disabled={controlsDisabled} onClick={() => onContinue(node)}>
                 {labels.continueHere} <ArrowRight className="size-4" />
+              </button>
+            ) : null}
+            {isPinned ? (
+              <button
+                type="button"
+                className="button-secondary"
+                disabled={controlsDisabled}
+                aria-pressed={node.locked}
+                onClick={() => onToggleDecisionLock(node)}
+              >
+                {node.locked ? <UnlockKeyhole className="size-4" /> : <LockKeyhole className="size-4" />}
+                {node.locked ? labels.unlockDecision : labels.lockDecision}
               </button>
             ) : null}
           </>
