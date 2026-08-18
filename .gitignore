@@ -16,5 +16,10 @@ dev-server*.log
 .codex-triptree-dev*.log
 .idea/
 .vercel/
+.claude/
 .DS_Store
 *.tsbuildinfo
+tmp/
+*.pptx
+*.pptx.inspect.ndjson
+sk_pretrain.py
