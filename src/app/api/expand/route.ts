@@ -5,6 +5,7 @@ import { filterDistinctCandidates, scoreBranchCandidate } from "@/agents/branchS
 import { AgentError } from "@/agents/llm";
 import { guardApiRequest } from "@/app/api/requestGuard";
 import { ExpandRequestSchema, ExpandResponseSchema } from "@/schemas/travel";
+import { assumptionId, assumptionKey, consequenceForNode, nodeId, slugify } from "./planningIds";
 import type { AgentTrace, BranchCandidate, PlanNode, PlanningAssumption, PlanningConsequence } from "@/types/travel";
 
 export const runtime = "nodejs";
@@ -22,33 +23,8 @@ function trace(agent: AgentTrace["agent"], summary: string, count: number, durat
   };
 }
 
-function slugify(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9一-鿿]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "branch";
-}
-
-function nodeId(parentId: string | null, dimension: string, title: string, index: number): string {
-  const parent = parentId ? slugify(parentId).slice(-24) : "root";
-  return `${parent}-${dimension}-${slugify(title)}-${index}`;
-}
-
-function consequenceForNode(
-  consequence: PlanningConsequence,
-  currentNodeId: string,
-  index: number
-): PlanningConsequence {
-  return {
-    ...consequence,
-    id: `${currentNodeId}-effect-${slugify(consequence.id || consequence.label)}-${index}`,
-    affectedNodeIds: [currentNodeId]
-  };
-}
-
 function importanceForDimension(dimension: PlanNode["dimension"]): PlanNode["importance"] {
   return dimension === "tripShape" || dimension === "rhythm" ? "High" : "Medium";
-}
-
-function assumptionKey(assumption: Pick<PlanningAssumption, "category" | "label" | "value">): string {
-  return `${assumption.category}|${slugify(assumption.label)}|${slugify(assumption.value)}`;
 }
 
 function mergeConsequence(
@@ -70,6 +46,13 @@ function mergeConsequence(
   );
 }
 
+class ResponseValidationError extends Error {
+  constructor(readonly issues: z.ZodError["issues"]) {
+    super("Expand response failed schema validation.");
+    this.name = "ResponseValidationError";
+  }
+}
+
 function errorResponse(error: unknown) {
   if (error instanceof AgentError) {
     const status = error.code === "CONFIG" ? 500 : 502;
@@ -78,7 +61,19 @@ function errorResponse(error: unknown) {
     return NextResponse.json({ error: message, code: error.code }, { status });
   }
 
+  // A response that fails its own schema is our bug, not the caller's, so it must
+  // not be reported as a 400. Both stages previously collapsed into the same
+  // opaque "Branch request validation failed." with nothing logged.
+  if (error instanceof ResponseValidationError) {
+    console.error("[expand:VALIDATION:response]", JSON.stringify(error.issues));
+    return NextResponse.json(
+      { error: "The branch response failed internal validation.", code: "VALIDATION" },
+      { status: 500 }
+    );
+  }
+
   if (error instanceof z.ZodError) {
+    console.error("[expand:VALIDATION:request]", JSON.stringify(error.issues));
     return NextResponse.json({ error: "Branch request validation failed.", code: "VALIDATION" }, { status: 400 });
   }
 
@@ -121,9 +116,7 @@ export async function POST(request: Request) {
         );
         const nodeAssumptions = candidate.assumptions.map((assumption, assumptionIndex): PlanningAssumption => {
           const key = assumptionKey(assumption);
-          const id =
-            assumptionIdByKey.get(key) ??
-            `assumption-${assumption.category}-${slugify(assumption.label)}-${slugify(assumption.value)}-${assumptionIndex}`;
+          const id = assumptionIdByKey.get(key) ?? assumptionId(assumption, assumptionIndex);
           const incoming: PlanningAssumption = {
             ...assumption,
             id,
@@ -178,14 +171,15 @@ export async function POST(request: Request) {
       throw new AgentError("Branch Explorer Agent returned no usable candidates after validation.", "VALIDATION");
     }
 
-    const response = ExpandResponseSchema.parse({
+    const parsed = ExpandResponseSchema.safeParse({
       nodes,
       assumptions: Array.from(assumptionById.values()),
       rationale: explorer.rationale,
       trace: [trace("Branch Explorer Agent", explorer.rationale, nodes.length, durationMs)]
     });
+    if (!parsed.success) throw new ResponseValidationError(parsed.error.issues);
 
-    return NextResponse.json(response);
+    return NextResponse.json(parsed.data);
   } catch (error) {
     return errorResponse(error);
   }

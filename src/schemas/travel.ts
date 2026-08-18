@@ -1602,13 +1602,17 @@ function normalizedPlanningStatus(input: unknown): z.infer<typeof PlanningAssump
   return "active";
 }
 
-function stablePlanningId(input: unknown, fallback: string): string {
+// Callers that mint planning ids (e.g. the expand route) must use this so the id
+// survives a round-trip through the schemas unchanged. Trailing dashes are
+// stripped after the slice, otherwise truncating mid-word leaves a dash that a
+// second pass would remove, making the function non-idempotent.
+export function stablePlanningId(input: unknown, fallback: string): string {
   return (
     asText(input, fallback)
       .toLowerCase()
       .replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-")
-      .replace(/^-|-$/g, "")
-      .slice(0, 64) || fallback
+      .slice(0, 64)
+      .replace(/^-|-$/g, "") || fallback
   );
 }
 
