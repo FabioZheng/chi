@@ -1831,7 +1831,10 @@ export const ExpandRequestSchema = z.object({
   probeAnswers: z.array(PreferenceProbeAnswerSchema).max(30).default([]),
   assumptions: z.array(PlanningAssumptionSchema).max(100).default([]),
   memory: UserMemorySchema.nullable().default(null),
-  language: LanguageSchema.default("en")
+  language: LanguageSchema.default("en"),
+  // Set when the traveller has already seen a set of branches and asked for
+  // more: excluding the titles alone still yields near-restatements.
+  diversify: z.boolean().default(false)
 });
 
 export const ExpandResponseSchema = z.object({

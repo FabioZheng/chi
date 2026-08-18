@@ -22,6 +22,8 @@ export type StudyEventName =
   | "assumption_rejected"
   | "assumption_locked"
   | "branch_expanded"
+  | "more_branches_requested"
+  | "more_branches_exhausted"
   | "branch_pinned"
   | "branch_pruned"
   | "branch_selected"

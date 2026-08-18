@@ -1,5 +1,5 @@
 import { budgetRiskRating, dailyBudgetCapEur } from "@/agents/presentationAgent";
-import type { BranchCandidate, BranchEstimates, PaceRating } from "@/types/travel";
+import type { BranchCandidate, BranchDimension, BranchEstimates, PaceRating, PlanNode } from "@/types/travel";
 
 /**
  * Deterministic branch scoring. Every candidate node the Branch Explorer
@@ -116,4 +116,34 @@ export function filterDistinctCandidates(candidates: BranchCandidate[], maxJacca
   });
 
   return accepted;
+}
+
+/**
+ * A branch's structural fingerprint for the decision it represents. Two
+ * siblings with the same fingerprint are the same option under different
+ * names, which is what "show more options" tends to produce: the explorer
+ * reliably avoids repeating a title but will happily restate its substance.
+ *
+ * The differentiator depends on the dimension being decided — nights carry the
+ * rhythm decision but are legitimately identical across anchor candidates — so
+ * comparing whole nodes would either miss duplicates or reject valid branches.
+ */
+export function branchSignature(
+  node: Pick<PlanNode, "cities" | "anchors" | "movementPattern" | "register">,
+  dimension: BranchDimension
+): string {
+  const normalize = (value: string) => value.toLowerCase().trim();
+  const cityNights = node.cities.map((city) => `${normalize(city.name)}:${city.nights}`).join("|");
+
+  switch (dimension) {
+    case "rhythm":
+      return cityNights;
+    case "anchors":
+      return [...node.anchors].map(normalize).sort().join("|");
+    case "logistics":
+      return `${normalize(node.movementPattern)}::${cityNights}`;
+    case "tripShape":
+    default:
+      return [...node.cities.map((city) => normalize(city.name))].sort().join("|");
+  }
 }

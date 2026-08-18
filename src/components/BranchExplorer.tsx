@@ -48,6 +48,9 @@ export type BranchTreeLabels = {
   checkpoint: string;
   exploring: string;
   noBranches: string;
+  moreOptions: string;
+  moreOptionsPending: string;
+  moreOptionsExhausted: string;
   selectedBranch: string;
   chooseBranch: string;
   routeFit: string;
@@ -121,12 +124,14 @@ type BranchExplorerProps = {
   assumptions: PlanningAssumptionMap;
   expanding: boolean;
   controlsDisabled: boolean;
+  maxOptionsPerLevel: number;
   labels: BranchTreeLabels;
   onSelect: (node: PlanNode) => void;
   onFavor: (node: PlanNode) => void;
   onPrune: (node: PlanNode) => void;
   onRestore: (node: PlanNode) => void;
   onContinue: (node: PlanNode) => void;
+  onGenerateMore: () => void;
 };
 
 type BranchInspectorProps = {
@@ -551,12 +556,14 @@ export function BranchExplorer({
   assumptions,
   expanding,
   controlsDisabled,
+  maxOptionsPerLevel,
   labels,
   onSelect,
   onFavor,
   onPrune,
   onRestore,
-  onContinue
+  onContinue,
+  onGenerateMore
 }: BranchExplorerProps) {
   const committed = committedPath(tree);
   const activeParentId = committed[committed.length - 1]?.id ?? null;
@@ -610,6 +617,13 @@ export function BranchExplorer({
         const level = stageIndex + 1;
         const nodes = tree.filter((node) => node.level === level);
         const isActive = activeDimension === stage;
+        // Only the branches under the checkpoint being decided can be extended,
+        // and only up to the cap that keeps a checkpoint readable.
+        const activeSiblings = isActive
+          ? nodes.filter((node) => (node.parentId ?? null) === activeParentId)
+          : [];
+        const canGenerateMore =
+          isActive && !expanding && activeSiblings.length > 0 && activeSiblings.length < maxOptionsPerLevel;
 
         return (
           <section key={stage} className={`tree-stage ${isActive ? "tree-stage--active" : ""}`}>
@@ -658,6 +672,18 @@ export function BranchExplorer({
                     <div key={item} className="tree-node-skeleton" />
                   ))}
                 </div>
+              ) : null}
+
+              {canGenerateMore ? (
+                <button
+                  type="button"
+                  className="tree-stage__more"
+                  disabled={controlsDisabled}
+                  onClick={onGenerateMore}
+                >
+                  <Sparkles className="size-3.5" />
+                  {labels.moreOptions}
+                </button>
               ) : null}
 
               {nodes.length === 0 && !(isActive && expanding) ? <p className="tree-stage__empty">{labels.noBranches}</p> : null}

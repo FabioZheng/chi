@@ -68,6 +68,7 @@ consequences: 1-4 concrete downstream planning effects of choosing this branch, 
 revealedPreference: the concrete trip rule implied by choosing THIS branch over its siblings. Use the request's preference categories.
 Honor the traveler's learned preferences and probe answers. Honor "guidance" text as the traveler's live steering instruction — it overrides your own ranking.
 Never repropose anything listed in excludedTitles or resembling it.
+When "diversify" is true the traveller has already seen the excluded branches and found none of them right, so a reworded variant is a wasted proposal. Change the underlying structure, not the wording: pick different cities or a different balance between them, a different movement pattern, or a different register. If the excluded titles share an assumption, break it.
 Respect any duration stated in the prompt; otherwise choose a sensible durationDays and keep it consistent across candidates.
 Write all user-facing text in the requested outputLanguage. Keep JSON field names, enum values, and category values in English exactly as specified.
 Do not generate a day-by-day itinerary.
@@ -92,6 +93,7 @@ export async function runBranchExplorerAgent(input: ExpandRequest, signal?: Abor
           durationDays: node.durationDays
         })),
         excludedTitles: input.excludedTitles,
+        diversify: input.diversify,
         guidance: input.guidance,
         learnedPreferences: input.learnedPreferences,
         probeAnswers: input.probeAnswers,
@@ -111,7 +113,9 @@ export async function runBranchExplorerAgent(input: ExpandRequest, signal?: Abor
       null,
       2
     ),
-    temperature: 0.5,
+    // A second pass over the same checkpoint needs more spread to avoid
+    // restating the branches the traveller already rejected.
+    temperature: input.diversify ? 0.85 : 0.5,
     signal
   });
 }

@@ -25,6 +25,7 @@ import {
   X
 } from "lucide-react";
 import { expandBranches, generateItinerary } from "@/api/client";
+import { branchSignature } from "@/agents/branchScoring";
 import {
   BranchExplorer,
   BranchInspector,
@@ -156,6 +157,10 @@ type RecentPlanningChange = {
 const STORAGE_KEY = "trip-tree:workspace:v3";
 const LEGACY_STORAGE_KEY = "trip-tree:workspace:v2";
 const BRANCH_STAGES = ["tripShape", "rhythm", "anchors", "logistics"] as const satisfies readonly BranchDimension[];
+// Keeps a checkpoint readable and bounds the excluded-title list the explorer
+// has to reason over. ExpandRequestSchema caps excludedTitles at 50.
+const MAX_OPTIONS_PER_LEVEL = 8;
+const MAX_EXCLUDED_TITLES = 50;
 
 const text = {
   en: {
@@ -244,6 +249,9 @@ const text = {
       checkpoint: "checkpoint",
       exploring: "exploring",
       noBranches: "Waiting for this decision",
+      moreOptions: "Show more options",
+      moreOptionsPending: "Finding more options...",
+      moreOptionsExhausted: "No further distinct options at this checkpoint",
       selectedBranch: "Select a node to compare its fit, risks, assumptions, and trade-offs.",
       chooseBranch: "Choose a branch",
       routeFit: "Route fit",
@@ -402,6 +410,9 @@ const text = {
       checkpoint: "检查点",
       exploring: "探索中",
       noBranches: "等待此项决策",
+      moreOptions: "显示更多选项",
+      moreOptionsPending: "正在寻找更多选项…",
+      moreOptionsExhausted: "此检查点暂无更多明显不同的选项",
       selectedBranch: "选择节点以比较匹配度、风险、假设和取舍。",
       chooseBranch: "选择分支",
       routeFit: "路线匹配",
@@ -921,6 +932,9 @@ export default function Home() {
     activeAssumptions: PlanningAssumptionMap;
     guidance?: string;
     repairing?: boolean;
+    // "append" keeps the branches already on screen and adds further ones, for
+    // travellers who do not find what they want among the current candidates.
+    mode?: "replace" | "append";
   }) {
     const path = committedPath(options.baseTree);
     if (path.length >= BRANCH_STAGES.length) {
@@ -933,16 +947,30 @@ export default function Home() {
     const parent = path[path.length - 1] ?? null;
     const level = path.length + 1;
     const parentId = parent?.id ?? null;
-    const excludedTitles = options.baseTree
-      .filter((node) => node.level === level && (node.parentId ?? null) === parentId && node.status === "pruned")
-      .map((node) => node.title);
+    const appending = options.mode === "append";
+    const siblings = options.baseTree.filter(
+      (node) => node.level === level && (node.parentId ?? null) === parentId
+    );
+    // Pruned branches are rejected evidence and are never reproposed. When
+    // asking for more, the branches still on screen have to be excluded too,
+    // otherwise the explorer just restates them.
+    const excludedTitles = siblings
+      .filter((node) => appending || node.status === "pruned")
+      .map((node) => node.title)
+      .slice(0, MAX_EXCLUDED_TITLES);
     const controller = new AbortController();
     const requestId = ++requestIdRef.current;
     controllerRef.current?.abort();
     controllerRef.current = controller;
     setActiveDimension(dimension);
     setStatus(options.repairing ? "repairing" : "generating");
-    setActivity(options.repairing ? copy.status.repairing : copy.generatingActivity);
+    setActivity(
+      options.repairing
+        ? copy.status.repairing
+        : appending
+          ? copy.tree.moreOptionsPending
+          : copy.generatingActivity
+    );
     setError(null);
 
     try {
@@ -958,32 +986,66 @@ export default function Home() {
           probeAnswers: [],
           assumptions: Object.values(options.activeAssumptions),
           memory: null,
-          language
+          language,
+          diversify: appending
         },
         controller.signal
       );
       if (requestId !== requestIdRef.current) return;
       if (result.nodes.length === 0) throw new Error("The planner returned no usable branches for this checkpoint.");
 
-      const nextTree = [
-        ...options.baseTree.filter(
-          (node) => !(node.level === level && (node.parentId ?? null) === parentId && node.status !== "pruned")
-        ),
-        ...result.nodes
-      ];
+      // The explorer is told to avoid the excluded titles but cannot be relied on
+      // for it, and two distinct titles can still collapse to the same node id,
+      // which React uses as a list key. Drop anything already on the tree.
+      const seenIds = new Set(options.baseTree.map((node) => node.id));
+      const seenTitles = new Set(siblings.map((node) => node.title.toLowerCase().trim()));
+      // Also reject branches that only differ by name: a rhythm option with the
+      // same nights split is the same decision however it is worded.
+      const seenSignatures = new Set(siblings.map((node) => branchSignature(node, dimension)));
+      const additions = appending
+        ? result.nodes.filter((node) => {
+            const signature = branchSignature(node, dimension);
+            if (seenIds.has(node.id) || seenTitles.has(node.title.toLowerCase().trim())) return false;
+            if (seenSignatures.has(signature)) return false;
+            seenSignatures.add(signature);
+            return true;
+          })
+        : result.nodes;
+
+      if (appending && additions.length === 0) {
+        setStatus("checkpoint");
+        setActivity(copy.tree.moreOptionsExhausted);
+        logStudyEvent(studyCondition, "more_branches_exhausted", dimension, {
+          existingCount: siblings.length
+        });
+        return;
+      }
+
+      const nextTree = appending
+        ? [...options.baseTree, ...additions]
+        : [
+            ...options.baseTree.filter(
+              (node) => !(node.level === level && (node.parentId ?? null) === parentId && node.status !== "pruned")
+            ),
+            ...additions
+          ];
       const nextAssumptions = linkAssumptionsToTree(
         nextTree,
         mergeAssumptions(options.activeAssumptions, result.assumptions)
       );
-      const best = [...result.nodes].sort(
+      const best = [...additions].sort(
         (a, b) => branchFitScore(b, options.activeRules.map((rule) => rule.value), budgetSignals) - branchFitScore(a, options.activeRules.map((rule) => rule.value), budgetSignals)
       )[0];
       setTree(nextTree);
       setAssumptions(nextAssumptions);
-      setRationale(result.rationale);
-      setSelectedNodeId(best?.id ?? null);
       setStatus("checkpoint");
       setActivity(copy.status.checkpoint);
+      // Appending answers the same question the traveller is already looking at,
+      // so the standing rationale and their current selection both still hold.
+      if (!appending) {
+        setRationale(result.rationale);
+        setSelectedNodeId(best?.id ?? null);
+      }
       addCheckpoint(
         `${copy.tree.stages[dimension]} ${copy.checkpointTitle.toLowerCase()}`,
         dimension,
@@ -991,10 +1053,11 @@ export default function Home() {
         options.activeRules,
         nextAssumptions
       );
-      logStudyEvent(studyCondition, "branch_expanded", dimension, {
-        branchCount: result.nodes.length,
+      logStudyEvent(studyCondition, appending ? "more_branches_requested" : "branch_expanded", dimension, {
+        branchCount: additions.length,
         assumptionCount: result.assumptions.length,
-        repairing: Boolean(options.repairing)
+        repairing: Boolean(options.repairing),
+        ...(appending ? { existingCount: siblings.length, totalCount: siblings.length + additions.length } : {})
       });
     } catch (caught) {
       if (caught instanceof Error && caught.name === "AbortError") return;
@@ -1070,6 +1133,17 @@ export default function Home() {
       parentId = byId.get(parentId)?.parentId ?? null;
     }
     return ids;
+  }
+
+  function handleGenerateMore() {
+    if (isWorking) return;
+    void expandTree({
+      baseTree: tree,
+      prompt: sessionPrompt,
+      activeRules: rules,
+      activeAssumptions: assumptions,
+      mode: "append"
+    });
   }
 
   function handleContinue(node: PlanNode) {
@@ -1823,6 +1897,7 @@ export default function Home() {
                       assumptions={assumptions}
                       expanding={status === "generating" || status === "repairing"}
                       controlsDisabled={isWorking}
+                      maxOptionsPerLevel={MAX_OPTIONS_PER_LEVEL}
                       labels={copy.tree}
                       onSelect={(node) => {
                         setSelectedNodeId(node.id);
@@ -1832,6 +1907,7 @@ export default function Home() {
                       onPrune={handlePrune}
                       onRestore={handleRestore}
                       onContinue={handleContinue}
+                      onGenerateMore={handleGenerateMore}
                     />
                   </div>
                 </section>
